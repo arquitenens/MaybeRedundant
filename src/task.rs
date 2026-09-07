@@ -33,7 +33,7 @@ impl<F: FnMut()> Taskable for F {
 
 
 impl Task {
-    const fn new<T>(data: *const T) -> Self where T: Taskable{
+    pub(crate) const fn new<T>(data: *const T) -> Self where T: Taskable{
         Self {
             is_exclusive: AtomicBool::new(false),
             data: data as *const _,

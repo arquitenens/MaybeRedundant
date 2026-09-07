@@ -1,5 +1,7 @@
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::Ordering::{Acquire, Release};
+use crate::scheduler::WORKER_STATE;
 use crate::task::Task;
 
 
@@ -32,7 +34,25 @@ impl Worker {
     pub(crate) fn run(self) {
         unsafe {
             loop {
-                
+                if self.signal.load(Ordering::Acquire) {
+                    dbg!("Dropping Worker {}", self.idx);
+                    let t = self.current_task.load(Ordering::Acquire).replace(Task::const_default());
+                    (t.dropper)(t.data);
+                    break;
+                }
+
+                let current_task = self.current_task.load(Ordering::Acquire);
+
+                if current_task.is_null(){
+                    continue;
+                }
+                //((*current_task).callable)((*current_task).data);
+
+                let ptr = WORKER_STATE[self.idx].get_imutable().as_ptr();
+                ptr.write_volatile(*ptr | 1 << (self.idx * self.offset))
+                //WORKER_STATE[self.idx].get_imutable().fetch_or(1 << self.idx, Release);
+
+
             }
         }
 
