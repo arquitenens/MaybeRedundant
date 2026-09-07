@@ -1,3 +1,8 @@
+//CONSTS
+pub const MAX_WORKERS_PER_SCHED: usize = 64;
+
+pub const MAX_SUB_SCHEDULERS: usize = 64;
+
 pub struct Config{
     pub(crate) max_threads: usize,
     pub(crate) threads_per_sub_sched: usize,
