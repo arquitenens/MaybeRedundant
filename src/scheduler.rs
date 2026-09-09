@@ -5,6 +5,7 @@ use crate::worker::Worker;
 use std::hint::black_box;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::{io, ptr};
+use std::arch::asm;
 use std::io::Write;
 use std::ptr::null_mut;
 use std::sync::atomic::Ordering::Release;
@@ -59,6 +60,7 @@ impl Scheduler {
             total_workers: 0,
         }
     }
+
     pub(crate) fn any_task<F, T>(&mut self, exec: F, unique_arg: bool) -> Result<(), WorkerError<F>>
     where F: FID + FnMut(),
           T: TypesIdx,
@@ -85,19 +87,30 @@ impl Scheduler {
         //And the dependency prevents the cpu from reordering
         unsafe {WORKER_STATE[tid].get().as_ptr().write_volatile(available_workers & (!(1u64 << available_idx)))};
         //create true dependency to prevent OoOe
-        let _no_use = unsafe {WORKER_STATE[tid].get().as_ptr().read_volatile()};
+        let mut _no_use = unsafe {WORKER_STATE[tid].get().as_ptr().read_volatile()};
         //the volatile and blackbox are purely for the compiler to not do any tricks
         //and try to reorder and or eliminate any operations
         black_box(_no_use);
-
         //get the correct offset from the sub_scheduler for the given workers
         let offset = unsafe { (*self.generic_schedulers[tid]).offset };
-
-        //overwrite the previous slot after setting the worker to busy
-        let raw = ptr::from_ref(&exec) as *mut F;
         //the reference should be fine since the function providing the closure is global and "static"
-        //TODO though i'd have to check more
-        let slot: *mut Task = unsafe {ptr::from_ref(&TASK_SLOTS[offset + available_idx]) as *mut _};
+        let raw = ptr::from_ref(&exec) as *mut F;
+        //To my knowledge Zen5 doesn't have a dependency elimination (zeroing idioms) on
+        //add x, !x and only on Cmp, Sub, Xor and SBB
+        let no_op_added: usize = unsafe {
+            let negated = _no_use as usize;
+            asm!(
+            "neg {0}",
+            "add {1}, {0}",
+            in(reg) negated,
+            inout(reg) _no_use);
+            _no_use as usize
+        };
+        //overwrite the previous slot after setting the worker to busy
+        let slot: *mut Task = unsafe {ptr::from_ref(&TASK_SLOTS[offset + available_idx + no_op_added]) as *mut _};
+
+
+
         unsafe {slot.write_volatile(Task::new(raw))};
 
 

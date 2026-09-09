@@ -42,6 +42,7 @@ pub struct SchedulerBuilder{
     pub(crate) total_workers: usize
 }
 impl SchedulerBuilder {
+    #[inline(never)]
     pub fn add_scheduler<T: TypesIdx>(mut self, thread_overwrite: ThreadAmount) -> Self{
         self.registrations += 1;
 

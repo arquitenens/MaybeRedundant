@@ -28,6 +28,16 @@ fn test_task1(x: &'static AtomicU64) -> impl FnMut() + Send + 'static {
     }
 }
 
+#[inline(never)]
+pub fn test(sh: &mut Scheduler, counter: &'static AtomicU64) {
+    let t = sh.any_task::<_, Fetch>(
+        counter_task1(counter),
+        false,
+    );
+
+    std::hint::black_box(t);
+}
+
 fn main() {
     let counter = &*Box::leak(Box::new(AtomicU64::new(0)));
 
@@ -37,6 +47,8 @@ fn main() {
         .register_task(test_task1(counter))
         .register_task(counter_task1(counter))
         .apply();
+
+    test(&mut sh, &counter);
 
     let now = Instant::now();
     for _ in 0..5_0{
