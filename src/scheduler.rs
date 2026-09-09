@@ -10,7 +10,7 @@ use std::ptr::null_mut;
 use std::sync::atomic::Ordering::Release;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::thread::JoinHandle;
-
+use crate::builder;
 
 union MaybeUninitTask{
     init: ManuallyDrop<Task>,
@@ -56,7 +56,7 @@ impl Scheduler {
             config,
             incomplete: Scheduler { generic_schedulers: [ptr::null_mut(); MAX_SUB_SCHEDULERS] },
             registrations: 0,
-            total: 0,
+            total_workers: 0,
         }
     }
     pub(crate) fn any_task<F, T>(&mut self, exec: F, unique_arg: bool) -> Result<(), WorkerError<F>>
@@ -72,8 +72,6 @@ impl Scheduler {
         }
 
         let available_workers = WORKER_STATE[tid].get().load(Ordering::Acquire);
-
-        //println!("available {:064b}", available_workers);
 
         let available_idx = available_workers.trailing_zeros() as usize;
 
@@ -92,17 +90,19 @@ impl Scheduler {
         //and try to reorder and or eliminate any operations
         black_box(_no_use);
 
+        //get the correct offset from the sub_scheduler for the given workers
         let offset = unsafe { (*self.generic_schedulers[tid]).offset };
 
+        //overwrite the previous slot after setting the worker to busy
+        let raw = ptr::from_ref(&exec) as *mut F;
+        //the reference should be fine since the function providing the closure is global and "static"
+        //TODO though i'd have to check more
         let slot: *mut Task = unsafe {ptr::from_ref(&TASK_SLOTS[offset + available_idx]) as *mut _};
+        unsafe {slot.write_volatile(Task::new(raw))};
 
-
-        if unique_arg {
-            let raw = ptr::from_ref(&exec) as *mut F;
-            unsafe {slot.replace(Task::new(raw))};
-        }
 
         //dirty iteration check
+        //TODO remove, its bad and unsafe
         let old = unsafe {*DIRTY_ITER.as_ptr()};
         unsafe {DIRTY_ITER.as_ptr().write(old + 1)};
         return Ok(())
@@ -139,16 +139,16 @@ impl SubScheduler {
         assert!(tid < MAX_SUB_SCHEDULERS, "TID greater than MAX_SUB_SCHEDULERS");
         assert!(offset + workers <= unsafe {(*&raw mut TASK_SLOTS).len()}, "not enough global task slots for this sub_scheduler");
 
+
+        //set uo the masks
         let mut mask = 0u64;
         mask |= (1 << workers) - 1;
 
         //println!("mask {:064b}", mask);
 
+        //init the states for a given sub_scheduler
         WORKER_STATE[T::get_or_register_tid()].get().store(mask, Release);
-        //println!("WORKER_STATE {:?}", WORKER_STATE);
-
         let handles: Box<[Option<JoinHandle<()>>; MAX_WORKERS_PER_SCHED]> = Box::new([const { None }; MAX_WORKERS_PER_SCHED]);
-
         let terminate = Padded([const { AtomicBool::new(false) }; MAX_WORKERS_PER_SCHED]);
 
         //This should be sound since im not creating any mutable references, hence "raw mut"
@@ -201,6 +201,7 @@ impl Drop for Scheduler {
     fn drop(&mut self) {
         //in order to only drop registered scheduler and save a bit of performance
         //you can just register a new item which will then have the biggest index, thus tell you how many items are registered
+        //also the user cant call "T::get_or_register_tid()" anyway
         for sh in self.generic_schedulers[0..DropRange::get_or_register_tid()].into_iter(){
             unsafe {sh.drop_in_place()};
         }

@@ -7,6 +7,7 @@ use crate::scheduler::{Scheduler, SubScheduler, TASK_SLOTS};
 use crate::task::Task;
 
 pub(crate) trait TypesIdx {
+    ///Cant be called outside of this crate so its fine
     fn get_or_register_tid() -> usize {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         generic_static_cache::generic_static! {
@@ -32,11 +33,13 @@ impl<T> FID for T {}
 
 pub struct SchedulerBuilder{
     pub(crate) config: Config,
+    //not yet completed scheduler
     pub(crate) incomplete: Scheduler,
     //Since every registration increments this it means a type that's not implemented it
     //will give an index greater than this registration
     pub(crate) registrations: usize,
-    pub(crate) total: usize
+
+    pub(crate) total_workers: usize
 }
 impl SchedulerBuilder {
     pub fn add_scheduler<T: TypesIdx>(mut self, thread_overwrite: ThreadAmount) -> Self{
@@ -50,9 +53,9 @@ impl SchedulerBuilder {
             ThreadAmount::Overwrite(n) => n,
         };
 
-        let offset = self.total;
+        let offset = self.total_workers;
         let sh = SubScheduler::new::<T>(offset, workers);
-        self.total += workers;
+        self.total_workers += workers;
 
         #[cfg(debug_assertions)]
         println!("sh: {:p}", sh);
@@ -61,6 +64,8 @@ impl SchedulerBuilder {
         unsafe {self.incomplete.generic_schedulers[T::get_or_register_tid()] = sh};
         return self
     }
+
+    //TODO this function is bound to be replaced with an attribute macro and is not there to stay
     pub fn register_task<F: FID + FnMut()>(self, exec: F) -> Self{
         let raw_task: *mut F = ptr::from_ref(&exec) as *mut _;
         let task = Task::new(raw_task);

@@ -9,7 +9,6 @@ use crate::scheduler::Padded;
 pub struct Task {
     //TODO i dont know if i need this to be padded, most likely not
     pub(crate) is_exclusive: AtomicBool,
-
     pub(crate) callable: unsafe fn(*const ()),
     pub(crate) data: *const (),
     pub(crate) dropper: unsafe fn(*const ()),
