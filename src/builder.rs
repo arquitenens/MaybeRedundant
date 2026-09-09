@@ -1,7 +1,7 @@
-use std::any::type_name;
-use std::mem::MaybeUninit;
-use std::ptr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use core::any::type_name;
+use core::mem::MaybeUninit;
+use core::ptr;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::config::{Config, ThreadAmount};
 use crate::scheduler::{Scheduler, SubScheduler, TASK_SLOTS};
 use crate::task::Task;

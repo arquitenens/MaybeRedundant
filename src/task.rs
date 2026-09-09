@@ -1,6 +1,6 @@
-use std::{mem, ptr};
-use std::ptr::{null, null_mut};
-use std::sync::atomic::AtomicBool;
+use core::{mem, ptr};
+use core::ptr::{null, null_mut};
+use core::sync::atomic::AtomicBool;
 use crate::scheduler::Padded;
 
 #[repr(align(64))]

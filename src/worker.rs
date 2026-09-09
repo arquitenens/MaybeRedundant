@@ -1,8 +1,6 @@
-use std::ptr::{null_mut, NonNull};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
-use std::sync::atomic::Ordering::{Acquire, Release};
 use crate::scheduler::WORKER_STATE;
 use crate::task::Task;
+use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 
 struct UnsafePtr<T>(*mut T);
@@ -54,7 +52,7 @@ impl Worker {
                      continue;
                  }
 
-                (*current_task).execute();
+                //(*current_task).execute();
 
 
                 let ptr = WORKER_STATE[self.idx].get().as_ptr();

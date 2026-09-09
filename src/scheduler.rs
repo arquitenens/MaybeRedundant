@@ -2,14 +2,13 @@ use crate::builder::{SchedulerBuilder, TypesIdx, FID};
 use crate::config::{Config, MAX_SUB_SCHEDULERS, MAX_WORKERS_PER_SCHED};
 use crate::task::Task;
 use crate::worker::Worker;
-use std::hint::black_box;
-use std::mem::{ManuallyDrop, MaybeUninit};
-use std::{io, ptr};
-use std::arch::asm;
-use std::io::Write;
+use core::hint::black_box;
+use core::mem::{ManuallyDrop, MaybeUninit};
+use core::{ptr};
+use core::arch::asm;
 use std::ptr::null_mut;
-use std::sync::atomic::Ordering::Release;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::Ordering::Release;
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use crate::builder;
 
@@ -61,7 +60,7 @@ impl Scheduler {
         }
     }
 
-    pub(crate) fn any_task<F, T>(&mut self, exec: F, unique_arg: bool) -> Result<(), WorkerError<F>>
+    pub(crate) fn any_task<F, T>(&mut self, exec: F) -> Result<(), WorkerError<F>>
     where F: FID + FnMut(),
           T: TypesIdx,
     {
@@ -69,7 +68,7 @@ impl Scheduler {
         let fid = exec.get_or_register_fid();
 
         if tid >= MAX_SUB_SCHEDULERS || fid >= MAX_WORKERS_PER_SCHED {
-            std::hint::cold_path();
+            core::hint::cold_path();
             panic!("You tried to input types that have not been registered yet into either the register or this function")
         }
 
@@ -98,6 +97,8 @@ impl Scheduler {
         let raw = ptr::from_ref(&exec) as *mut F;
         //To my knowledge Zen5 doesn't have a dependency elimination (zeroing idioms) on
         //add x, !x and only on Cmp, Sub, Xor and SBB
+        //TODO i dont know about other platforms and should probably be some cfg flags
+        //TODO but the operation is pretty opaque in general
         let no_op_added: usize = unsafe {
             let negated = _no_use as usize;
             asm!(
@@ -108,10 +109,9 @@ impl Scheduler {
             _no_use as usize
         };
         //overwrite the previous slot after setting the worker to busy
+        //use the "no_op_added" inside-of the memory indexing so the cpu cannot start executing until the writes/reads are done
+        //though its only 0, it doesn't change anything
         let slot: *mut Task = unsafe {ptr::from_ref(&TASK_SLOTS[offset + available_idx + no_op_added]) as *mut _};
-
-
-
         unsafe {slot.write_volatile(Task::new(raw))};
 
 
@@ -169,12 +169,12 @@ impl SubScheduler {
         let incomplete_schedulers: *mut SubScheduler = unsafe {(&raw mut SUB_SCHEDULERS[T::get_or_register_tid()]).cast::<SubScheduler>()};
 
         unsafe {
-            std::ptr::write_volatile(&raw mut (*incomplete_schedulers).workers, workers);
+            core::ptr::write_volatile(&raw mut (*incomplete_schedulers).workers, workers);
             //println!("workers {}", (*incomplete_schedulers).workers);
-            std::ptr::write_volatile(&raw mut (*incomplete_schedulers).offset, offset);
+            core::ptr::write_volatile(&raw mut (*incomplete_schedulers).offset, offset);
             //println!("offset {}", (*incomplete_schedulers).offset);
-            std::ptr::write_volatile(&raw mut (*incomplete_schedulers).worker_terminate, terminate);
-            std::ptr::write_volatile(&raw mut (*incomplete_schedulers).handles, handles);
+            core::ptr::write_volatile(&raw mut (*incomplete_schedulers).worker_terminate, terminate);
+            core::ptr::write_volatile(&raw mut (*incomplete_schedulers).handles, handles);
 
             for w in 0..workers {
                 let global_slot = offset + w;

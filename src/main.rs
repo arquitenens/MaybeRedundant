@@ -1,12 +1,9 @@
-use std::hint::black_box;
-use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::Ordering::{Acquire, Release};
-use std::thread::JoinHandle;
-use std::time::Instant;
 use crate::config::ThreadAmount;
-use crate::scheduler::{Scheduler, SubScheduler, WorkerError, DIRTY_ITER, TASK_SLOTS};
-use crate::task::Task;
+use crate::scheduler::{Scheduler, DIRTY_ITER};
+use core::hint::black_box;
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering::{Acquire, Release};
+use std::time::Instant;
 
 mod scheduler;
 mod builder;
@@ -32,7 +29,6 @@ fn test_task1(x: &'static AtomicU64) -> impl FnMut() + Send + 'static {
 pub fn test(sh: &mut Scheduler, counter: &'static AtomicU64) {
     let t = sh.any_task::<_, Fetch>(
         counter_task1(counter),
-        false,
     );
 
     std::hint::black_box(t);
@@ -52,9 +48,9 @@ fn main() {
 
     let now = Instant::now();
     for _ in 0..5_0{
-        let t = sh.any_task::<_, Fetch>(counter_task1(counter), false);
+        let t = sh.any_task::<_, Fetch>(counter_task1(counter));
         let _ = black_box(t);
-        let y = sh.any_task::<_, Post>(test_task1(counter), false);
+        let y = sh.any_task::<_, Post>(test_task1(counter));
         let _ = black_box(y);
 
     }
