@@ -5,6 +5,7 @@ use crate::scheduler::Padded;
 
 #[repr(align(64))]
 #[repr(C)]
+#[derive(Debug)]
 pub struct Task {
     //TODO i dont know if i need this to be padded, most likely not
     pub(crate) is_exclusive: AtomicBool,
@@ -30,7 +31,8 @@ impl<F: FnMut()> Taskable for F {
     }
 }
 
-
+unsafe fn noop_call(_: *const ()) {}
+unsafe fn noop_drop(_: *const ()) {}
 
 impl Task {
     pub(crate) const fn new<T>(data: *const T) -> Self where T: Taskable{
@@ -41,17 +43,14 @@ impl Task {
             dropper: <T as Taskable>::drop,
         }
     }
+    pub(crate) const fn empty() -> Self {
+        Self { is_exclusive: AtomicBool::new(false), data: ptr::null(), callable: noop_call, dropper: noop_drop }
+    }
+
     #[inline(always)]
     pub unsafe fn execute(&mut self){
         unsafe { (self.callable)(self.data) }
     }
 
-    pub(crate) const fn const_default() -> Self {
-        Self{
-            is_exclusive: AtomicBool::new(false),
-            callable: |_|{},
-            data: null(),
-            dropper: |_|{},
-        }
-    }
+
 }

@@ -1,8 +1,11 @@
 use std::hint::black_box;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::{Acquire, Release};
 use std::thread::JoinHandle;
 use std::time::Instant;
 use crate::config::ThreadAmount;
-use crate::scheduler::{Scheduler, SubScheduler, TASK_SLOTS};
+use crate::scheduler::{Scheduler, SubScheduler, WorkerError, DIRTY_ITER, TASK_SLOTS};
 use crate::task::Task;
 
 mod scheduler;
@@ -14,43 +17,40 @@ mod config;
 struct Post;
 struct Fetch;
 
-fn counter_task1() -> impl FnMut() + Send + 'static {
+fn counter_task1(x: &'static AtomicU64) -> impl FnMut() + Send + 'static {
     move || {
-        let mut x: i64 = black_box(67);
-        for i in 0..200 {
-            x = x.wrapping_mul(0x9E3779B97F4A7C1).wrapping_add(i);
-
-            x ^= x >> 27;
-            x = x.rotate_left(17);
-
-            x = x.wrapping_mul(x | 1);
-        }
-
+        x.fetch_add(1, Release);
     }
 }
-fn test_task1() -> impl FnMut() + Send + 'static {
+fn test_task1(x: &'static AtomicU64) -> impl FnMut() + Send + 'static {
     move || {
-        //println!("hi");
+        x.fetch_add(1, Release);
     }
 }
 
 fn main() {
+    let counter = &*Box::leak(Box::new(AtomicU64::new(0)));
+
     let mut sh = Scheduler::new(config::Config::default())
         .add_scheduler::<Post>(ThreadAmount::Default)
         .add_scheduler::<Fetch>(ThreadAmount::Default)
-        .register_task(test_task1())
-        .register_task(counter_task1())
+        .register_task(test_task1(counter))
+        .register_task(counter_task1(counter))
         .apply();
 
     let now = Instant::now();
-    for i in 0..5_000_000{
-        let x = sh.any_task::<_, Fetch>(test_task1(), false);
-        let y = sh.any_task::<_, Post>(test_task1(), false);
-        black_box(x);
-        black_box(y);
+    for _ in 0..50_000_000{
+        let t = sh.any_task::<_, Fetch>(counter_task1(counter), false);
+        let _ = black_box(t);
+        let y = sh.any_task::<_, Post>(test_task1(counter), false);
+        let _ = black_box(y);
+
     }
     let elapsed = now.elapsed();
     println!("Elapsed: {:.2?}", elapsed);
 
+    println!("counter: {:?}", counter);
+    
+    println!("iters: {:?}", DIRTY_ITER.load(Acquire));
     black_box(sh);
 }

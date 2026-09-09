@@ -1,4 +1,4 @@
-use std::ptr::NonNull;
+use std::ptr::{null_mut, NonNull};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::sync::atomic::Ordering::{Acquire, Release};
 use crate::scheduler::WORKER_STATE;
@@ -11,9 +11,6 @@ unsafe impl<T> Send for UnsafePtr<T> {}
 pub(crate) struct Worker{
     pub(crate) idx: usize,
 
-    pub(crate) offset: usize,
-
-
     pub(crate) signal: &'static AtomicBool,
 
     //the worker doesn't care if the task came from cache or from the queue
@@ -23,10 +20,9 @@ pub(crate) struct Worker{
 
 
 impl Worker {
-    pub(crate) fn new(idx: usize, offset: usize, signal: &'static AtomicBool, current_task: AtomicPtr<Task>) -> Self {
+    pub(crate) fn new(idx: usize, slot: usize, signal: &'static AtomicBool, current_task: AtomicPtr<Task>) -> Self {
         Self{
             idx,
-            offset,
             signal,
             current_task,
         }
@@ -35,22 +31,34 @@ impl Worker {
         unsafe {
             loop {
                 if self.signal.load(Ordering::Acquire) {
-                    dbg!("Dropping Worker {}", self.idx);
-                    let t = self.current_task.load(Ordering::Acquire).replace(Task::const_default());
-                    (t.dropper)(t.data);
+                    //dbg!("Dropping Worker {}", self.idx);
+                    let old = self.current_task.load(Ordering::Acquire).replace(Task::empty());
+                    if !old.data.is_null() { (old.dropper)(old.data); }
+
+                    //TODO Maybe send acknowledge signal so the worker isn't drop a tad bit too early
+                    self.signal;
+
                     break;
                 }
 
                 let current_task = self.current_task.load(Ordering::Acquire);
 
-                if current_task.is_null(){
-                    continue;
-                }
-                //((*current_task).callable)((*current_task).data);
 
-                let ptr = WORKER_STATE[self.idx].get_imutable().as_ptr();
-                ptr.write_volatile(*ptr | 1 << (self.idx * self.offset))
-                //WORKER_STATE[self.idx].get_imutable().fetch_or(1 << self.idx, Release);
+                // if current_task.is_null(){
+                //     continue;
+                // }
+                // if (*current_task).data.is_null(){
+                //     continue;
+                // }
+                // 
+                // (*current_task).execute();
+
+
+                let ptr = WORKER_STATE[self.idx].get().as_ptr();
+                current_task.write_volatile(Task::empty());
+
+                ptr.write_volatile(*ptr | 1 << self.idx)
+                //WORKER_STATE[self.idx].get().fetch_or(1 << self.idx, Release);
 
 
             }
