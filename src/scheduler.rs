@@ -94,6 +94,7 @@ impl Scheduler {
         //get the correct offset from the sub_scheduler for the given workers
         let offset = unsafe { (*self.generic_schedulers[tid]).offset };
         //the reference should be fine since the function providing the closure is global and "static"
+        //TODO if reference isn't fine gonna try working with allocating the tasks either in .data or heap or something like that idk
         let raw = ptr::from_ref(&exec) as *mut F;
         //To my knowledge Zen5 doesn't have a dependency elimination (zeroing idioms) on
         //add x, !x and only on Cmp, Sub, Xor and SBB
