@@ -1,4 +1,4 @@
-use crate::builder::{SchedulerBuilder, TypesIdx, FID};
+use crate::builder::{SchedulerBuilder};
 use crate::config::{Config, MAX_SUB_SCHEDULERS, MAX_WORKERS_PER_SCHED};
 use crate::task::Task;
 use crate::worker::Worker;
@@ -11,11 +11,7 @@ use core::sync::atomic::Ordering::Release;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use crate::builder;
-
-union MaybeUninitTask{
-    init: ManuallyDrop<Task>,
-    uninit: Padded<()>
-}
+use crate::IdxCache::{FIDCache, IdxCache};
 
 //global task slots
 //due to how FID works duplicates are impossible meaning 128 unique Tasks can be stored in a program
@@ -61,11 +57,12 @@ impl Scheduler {
     }
 
     pub(crate) fn any_task<F, T>(&mut self, exec: F) -> Result<(), WorkerError<F>>
-    where F: FID + FnMut(),
-          T: TypesIdx,
+    where F: FIDCache + FnMut(),
+          T: IdxCache,
     {
-        let tid = T::get_or_register_tid();
-        let fid = exec.get_or_register_fid();
+        let tid = T::empty::<T>().get_tid();
+        //println!("tid: {}", tid);
+        let fid = exec.get_fid();
 
         if tid >= MAX_SUB_SCHEDULERS || fid >= MAX_WORKERS_PER_SCHED {
             core::hint::cold_path();
@@ -148,8 +145,10 @@ static mut SUB_SCHEDULERS:
 [MaybeUninit<SubScheduler>; MAX_SUB_SCHEDULERS] =
     [const { MaybeUninit::uninit() }; MAX_SUB_SCHEDULERS];
 impl SubScheduler {
-    pub(crate) fn new<T: TypesIdx>(offset: usize, workers: usize) -> *mut Self {
-        let tid = T::get_or_register_tid();
+
+    pub(crate) fn new<T: IdxCache>(offset: usize, workers: usize) -> *mut Self {
+        let tid = T::empty::<T>().get_tid();
+
         assert!(tid < MAX_SUB_SCHEDULERS, "TID greater than MAX_SUB_SCHEDULERS");
         assert!(offset + workers <= unsafe {(*&raw mut TASK_SLOTS).len()}, "not enough global task slots for this sub_scheduler");
 
@@ -161,12 +160,12 @@ impl SubScheduler {
         //println!("mask {:064b}", mask);
 
         //init the states for a given sub_scheduler
-        WORKER_STATE[T::get_or_register_tid()].get().store(mask, Release);
+        WORKER_STATE[tid].get().store(mask, Release);
         let handles: Box<[Option<JoinHandle<()>>; MAX_WORKERS_PER_SCHED]> = Box::new([const { None }; MAX_WORKERS_PER_SCHED]);
         let terminate = Padded([const { AtomicBool::new(false) }; MAX_WORKERS_PER_SCHED]);
 
         //This should be sound since im not creating any mutable references, hence "raw mut"
-        let incomplete_schedulers: *mut SubScheduler = unsafe {(&raw mut SUB_SCHEDULERS[T::get_or_register_tid()]).cast::<SubScheduler>()};
+        let incomplete_schedulers: *mut SubScheduler = unsafe {(&raw mut SUB_SCHEDULERS[tid]).cast::<SubScheduler>()};
 
         unsafe {
             core::ptr::write_volatile(&raw mut (*incomplete_schedulers).workers, workers);
@@ -216,7 +215,7 @@ impl Drop for Scheduler {
         //in order to only drop registered scheduler and save a bit of performance
         //you can just register a new item which will then have the biggest index, thus tell you how many items are registered
         //also the user cant call "T::get_or_register_tid()" anyway
-        for sh in self.generic_schedulers[0..DropRange::get_or_register_tid()].into_iter(){
+        for sh in self.generic_schedulers[0..DropRange.get_tid()].into_iter(){
             unsafe {sh.drop_in_place()};
         }
     }

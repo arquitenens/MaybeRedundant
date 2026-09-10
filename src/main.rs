@@ -10,6 +10,7 @@ mod builder;
 mod worker;
 mod task;
 mod config;
+mod IdxCache;
 
 struct Post;
 struct Fetch;
@@ -47,7 +48,7 @@ fn main() {
     test(&mut sh, &counter);
 
     let now = Instant::now();
-    for _ in 0..5_0{
+    for _ in 0..5_000_000 {
         let t = sh.any_task::<_, Fetch>(counter_task1(counter));
         let _ = black_box(t);
         let y = sh.any_task::<_, Post>(test_task1(counter));
