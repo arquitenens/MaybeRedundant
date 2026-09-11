@@ -9,9 +9,10 @@ use core::arch::asm;
 use std::ptr::null_mut;
 use core::sync::atomic::Ordering::Release;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::thread::JoinHandle;
 use crate::builder;
-use crate::IdxCache::{FIDCache, IdxCache};
+use crate::idx_cache::{FIDCache, IdxCache};
 
 //global task slots
 //due to how FID works duplicates are impossible meaning 128 unique Tasks can be stored in a program
@@ -42,26 +43,27 @@ pub(crate) enum WorkerError<F: FnMut()>{
 }
 
 pub(crate) struct Scheduler {
-    pub(crate) generic_schedulers: [*mut SubScheduler; MAX_SUB_SCHEDULERS],
+    pub(crate) generic_schedulers: [Padded<*mut SubScheduler>; MAX_SUB_SCHEDULERS],
 }
 
+pub(crate) static WORKER_AVERAGE: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static DIRTY_ITER: AtomicU64 = AtomicU64::new(0);
 impl Scheduler {
     pub(crate) fn new(config: Config) -> SchedulerBuilder {
         SchedulerBuilder{
             config,
-            incomplete: Scheduler { generic_schedulers: [ptr::null_mut(); MAX_SUB_SCHEDULERS] },
+            incomplete: Scheduler { generic_schedulers: [Padded(ptr::null_mut()); MAX_SUB_SCHEDULERS] },
             registrations: 0,
             total_workers: 0,
         }
     }
 
+    #[inline]
     pub(crate) fn any_task<F, T>(&mut self, exec: F) -> Result<(), WorkerError<F>>
     where F: FIDCache + FnMut(),
           T: IdxCache,
     {
         let tid = T::empty::<T>().get_tid();
-        //println!("tid: {}", tid);
         let fid = exec.get_fid();
 
         if tid >= MAX_SUB_SCHEDULERS || fid >= MAX_WORKERS_PER_SCHED {
@@ -70,6 +72,7 @@ impl Scheduler {
         }
 
         let available_workers = WORKER_STATE[tid].get().load(Ordering::Acquire);
+
 
         let available_idx = available_workers.trailing_zeros() as usize;
 
@@ -88,7 +91,7 @@ impl Scheduler {
         //and try to reorder and or eliminate any operations
         black_box(_no_use);
         //get the correct offset from the sub_scheduler for the given workers
-        let offset = unsafe { (*self.generic_schedulers[tid]).offset };
+        let offset = unsafe { (*self.generic_schedulers[tid].0).offset };
         //the reference should be fine since the function providing the closure is global and "static"
         //TODO if reference isn't fine gonna try working with allocating the tasks either in .data or heap or something like that idk
         let raw = ptr::from_ref(&exec) as *mut F;
@@ -108,7 +111,8 @@ impl Scheduler {
         //overwrite the previous slot after setting the worker to busy
         //use the "no_op_added" inside-of the memory indexing so the cpu cannot start executing until the writes/reads are done
         //though its only 0, it doesn't change anything
-        let slot: *mut Task = unsafe {ptr::from_ref(&TASK_SLOTS[offset + available_idx + no_op_added]) as *mut _};
+
+        let slot: *mut Task = unsafe {&raw mut TASK_SLOTS[offset + available_idx + no_op_added] as *mut Task};
         unsafe {slot.write_volatile(Task::new(raw))};
 
 
@@ -180,7 +184,7 @@ impl SubScheduler {
                 let worker = Worker::new(w,
                                          tid,
                                          &(*incomplete_schedulers).worker_terminate.get()[w],
-                                         AtomicPtr::new(ptr::from_ref(&TASK_SLOTS[global_slot]) as *mut _)
+                                         AtomicPtr::new(&raw mut TASK_SLOTS[global_slot] as *mut Task)
                 );
                 let h = std::thread::spawn(move || {
                     worker.run()
@@ -198,7 +202,6 @@ impl Drop for SubScheduler {
     //for every task to complete if you care
     fn drop(&mut self) {
             #[cfg(debug_assertions)]
-            //println!("WHOLE: {:?}", self);
             eprintln!("sub-scheduler = {:p} has been dropped", self);
             for (idx, h) in self.handles[0..self.workers].iter_mut().enumerate(){
                 self.worker_terminate.get()[idx].store(true, Ordering::Release);
@@ -214,9 +217,9 @@ impl Drop for Scheduler {
     fn drop(&mut self) {
         //in order to only drop registered scheduler and save a bit of performance
         //you can just register a new item which will then have the biggest index, thus tell you how many items are registered
-        //also the user cant call "T::get_or_register_tid()" anyway
+        let x = DropRange.get_tid();
         for sh in self.generic_schedulers[0..DropRange.get_tid()].into_iter(){
-            unsafe {sh.drop_in_place()};
+            unsafe {sh.0.drop_in_place()};
         }
     }
 }

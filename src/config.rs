@@ -25,6 +25,6 @@ impl Config{
 
 impl Default for Config{
     fn default() -> Self{
-        Config{max_threads: 8, threads_per_sub_sched: 4}
+        Config{max_threads: 16, threads_per_sub_sched: 8}
     }
 }

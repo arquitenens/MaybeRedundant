@@ -1,16 +1,17 @@
 use crate::config::ThreadAmount;
-use crate::scheduler::{Scheduler, DIRTY_ITER};
+use crate::scheduler::{Scheduler, WorkerError, DIRTY_ITER, WORKER_AVERAGE, WORKER_STATE};
 use core::hint::black_box;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering::{Acquire, Release};
-use std::time::Instant;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 mod scheduler;
 mod builder;
 mod worker;
 mod task;
 mod config;
-mod IdxCache;
+mod idx_cache;
 
 struct Post;
 struct Fetch;
@@ -26,32 +27,37 @@ fn test_task1(x: &'static AtomicU64) -> impl FnMut() + Send + 'static {
     }
 }
 
-#[inline(never)]
-pub fn test(sh: &mut Scheduler, counter: &'static AtomicU64) {
-    let t = sh.any_task::<_, Fetch>(
-        counter_task1(counter),
-    );
+fn empty_task1() -> impl FnMut() + Send + 'static {
+    move || {
 
-    std::hint::black_box(t);
+    }
+}
+fn empty_task2() -> impl FnMut() + Send + 'static {
+    move || {
+
+    }
 }
 
+
+
 fn main() {
-    let counter = &*Box::leak(Box::new(AtomicU64::new(0)));
+    let counter = Box::leak(Box::new(AtomicU64::new(0)));
 
     let mut sh = Scheduler::new(config::Config::default())
         .add_scheduler::<Post>(ThreadAmount::Default)
         .add_scheduler::<Fetch>(ThreadAmount::Default)
-        .register_task(test_task1(counter))
-        .register_task(counter_task1(counter))
+        .register_task(empty_task1())
+        .register_task(empty_task2())
         .apply();
 
-    test(&mut sh, &counter);
+
 
     let now = Instant::now();
     for _ in 0..5_000_000 {
-        let t = sh.any_task::<_, Fetch>(counter_task1(counter));
+        let t = sh.any_task::<_, Fetch>(empty_task1());
         let _ = black_box(t);
-        let y = sh.any_task::<_, Post>(test_task1(counter));
+
+        let y = sh.any_task::<_, Post>(empty_task2());
         let _ = black_box(y);
 
     }
@@ -61,5 +67,6 @@ fn main() {
     println!("counter: {:?}", counter);
     
     println!("iters: {:?}", DIRTY_ITER.load(Acquire));
+    println!("workers: {:?}", WORKER_AVERAGE.load(Acquire) / 1_000_000);
     black_box(sh);
 }

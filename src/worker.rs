@@ -1,7 +1,9 @@
 use crate::scheduler::WORKER_STATE;
 use crate::task::Task;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-
+use std::sync::atomic::Ordering::Release;
+use std::thread::sleep;
+use std::time::Duration;
 
 struct UnsafePtr<T>(*mut T);
 unsafe impl<T> Send for UnsafePtr<T> {}
@@ -43,25 +45,15 @@ impl Worker {
 
                 let current_task = self.current_task.load(Ordering::Acquire);
 
-
-                //TODO just a general function of "task.is_empty()"
-                 if current_task.is_null(){
-                     continue;
-                 }
-                 if (*current_task).data.is_null(){
-                     continue;
-                 }
-
                 //(*current_task).execute();
 
 
                 let ptr = WORKER_STATE[self.idx].get().as_ptr();
-                current_task.write_volatile(Task::empty());
+                current_task.replace(Task::empty());
 
                 ptr.write_volatile(*ptr | 1 << self.idx);
                 //WORKER_STATE[self.idx].get().fetch_or(1 << self.idx, Release);
-
-
+                
             }
         }
 

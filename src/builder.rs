@@ -3,8 +3,8 @@ use core::mem::MaybeUninit;
 use core::ptr;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::config::{Config, ThreadAmount};
-use crate::IdxCache::{FIDCache, IdxCache};
-use crate::scheduler::{Scheduler, SubScheduler, TASK_SLOTS};
+use crate::idx_cache::{FIDCache, IdxCache};
+use crate::scheduler::{Padded, Scheduler, SubScheduler, TASK_SLOTS};
 use crate::task::Task;
 
 
@@ -41,13 +41,13 @@ impl SchedulerBuilder {
         
         let x = T::empty::<T>().get_tid();
 
-        unsafe {self.incomplete.generic_schedulers[T::empty::<T>().get_tid()] = sh};
+        unsafe {self.incomplete.generic_schedulers[T::empty::<T>().get_tid()] = Padded(sh)};
         return self
     }
 
     //TODO this function is bound to be replaced with an attribute macro and is not there to stay
     pub fn register_task<F: FIDCache + FnMut()>(self, exec: F) -> Self{
-        let raw_task: *mut F = ptr::from_ref(&exec) as *mut _;
+        let raw_task: *mut F = &exec as *const F as *mut _;
         let task = Task::new(raw_task);
         unsafe {TASK_SLOTS[exec.get_fid()].replace(task)};
         //println!("TASK_SLOTS {:?}", unsafe {&*&raw mut TASK_SLOTS});
