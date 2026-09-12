@@ -48,7 +48,7 @@ pub trait IdxCache{
         let tid = private_tid(&self);
 
         //Max is ADDRESS_SPACE_BITS / 2 or 24 with 48 as address space;
-        //a few times redunction in average case of N linear search while not being too expensive
+        //a few times reduction in average case of N linear search while not being too expensive
         let addr = tid & ((1u64 << ADDRESS_SPACE_BITS) - 1) as usize;
         let mask = addr & 0x5555555555555555;
         let extra = (tid & 4095) % 7;
@@ -84,7 +84,7 @@ pub trait IdxCache{
     }
 }
 
-
+///FID is just a different static counter so it doesnt clash with IdxCache for all other types
 pub trait FIDCache{
     ///The Tid might not appear in the order you registered them but is always the same and increments sequentially
     fn get_fid(&self) -> usize {

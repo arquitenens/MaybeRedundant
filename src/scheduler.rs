@@ -44,6 +44,7 @@ pub(crate) enum WorkerError<F: FnMut()>{
 
 pub(crate) struct Scheduler {
     pub(crate) generic_schedulers: [Padded<*mut SubScheduler>; MAX_SUB_SCHEDULERS],
+    iterations: usize,
 }
 
 pub(crate) static WORKER_AVERAGE: AtomicUsize = AtomicUsize::new(0);
@@ -52,7 +53,7 @@ impl Scheduler {
     pub(crate) fn new(config: Config) -> SchedulerBuilder {
         SchedulerBuilder{
             config,
-            incomplete: Scheduler { generic_schedulers: [Padded(ptr::null_mut()); MAX_SUB_SCHEDULERS] },
+            incomplete: Scheduler { generic_schedulers: [Padded(ptr::null_mut()); MAX_SUB_SCHEDULERS], iterations: 0 },
             registrations: 0,
             total_workers: 0,
         }
@@ -115,6 +116,12 @@ impl Scheduler {
         let slot: *mut Task = unsafe {&raw mut TASK_SLOTS[offset + available_idx + no_op_added] as *mut Task};
         unsafe {slot.write_volatile(Task::new(raw))};
 
+        //heart beat test
+        #[cfg(debug_assertions)]
+        if self.iterations % 50 == 0{
+            //TODO
+        }
+
 
         //dirty iteration check
         //TODO remove, its bad and unsafe
@@ -139,6 +146,7 @@ pub(crate) struct SubScheduler{
     //TODO but also there is not really a point in having it be on the heap?
     handles: Box<[Option<JoinHandle<()>>; MAX_WORKERS_PER_SCHED]>,
 
+    heartbeat_test: [Padded<AtomicBool>; MAX_WORKERS_PER_SCHED],
     //every worker has their own UNIQUE index into it and terminates once it's set to true
     //since its mostly only reads they can be in the same cache-line
     worker_terminate: Padded<[AtomicBool; MAX_WORKERS_PER_SCHED]>,
@@ -166,6 +174,7 @@ impl SubScheduler {
         //init the states for a given sub_scheduler
         WORKER_STATE[tid].get().store(mask, Release);
         let handles: Box<[Option<JoinHandle<()>>; MAX_WORKERS_PER_SCHED]> = Box::new([const { None }; MAX_WORKERS_PER_SCHED]);
+        let heartbeats = [const { Padded(AtomicBool::new(false)) }; MAX_WORKERS_PER_SCHED];
         let terminate = Padded([const { AtomicBool::new(false) }; MAX_WORKERS_PER_SCHED]);
 
         //This should be sound since im not creating any mutable references, hence "raw mut"
@@ -178,12 +187,14 @@ impl SubScheduler {
             //println!("offset {}", (*incomplete_schedulers).offset);
             core::ptr::write_volatile(&raw mut (*incomplete_schedulers).worker_terminate, terminate);
             core::ptr::write_volatile(&raw mut (*incomplete_schedulers).handles, handles);
+            core::ptr::write_volatile(&raw mut (*incomplete_schedulers).heartbeat_test, heartbeats);
 
             for w in 0..workers {
                 let global_slot = offset + w;
                 let worker = Worker::new(w,
                                          tid,
-                                         &(*incomplete_schedulers).worker_terminate.get()[w],
+                                         (*incomplete_schedulers).heartbeat_test[global_slot].get(),
+                                         &(*incomplete_schedulers).worker_terminate.0[w],
                                          AtomicPtr::new(&raw mut TASK_SLOTS[global_slot] as *mut Task)
                 );
                 let h = std::thread::spawn(move || {

@@ -46,11 +46,10 @@ impl SchedulerBuilder {
     }
 
     //TODO this function is bound to be replaced with an attribute macro and is not there to stay
-    pub fn register_task<F: FIDCache + FnMut()>(self, exec: F) -> Self{
-        let raw_task: *mut F = &exec as *const F as *mut _;
+    pub fn register_task<F: FIDCache + FnMut()>(self, exec: &F) -> Self{
+        let raw_task: *mut F = exec as *const F as *mut _;
         let task = Task::new(raw_task);
         unsafe {TASK_SLOTS[exec.get_fid()].replace(task)};
-        //println!("TASK_SLOTS {:?}", unsafe {&*&raw mut TASK_SLOTS});
         return self
     }
 

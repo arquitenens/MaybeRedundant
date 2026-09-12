@@ -16,7 +16,7 @@ mod idx_cache;
 struct Post;
 struct Fetch;
 
-fn counter_task1(x: &'static AtomicU64) -> impl FnMut() + Send + 'static {
+fn test_task2(x: &'static AtomicU64) -> impl FnMut() + Send + 'static {
     move || {
         x.fetch_add(1, Release);
     }
@@ -46,19 +46,19 @@ fn main() {
     let mut sh = Scheduler::new(config::Config::default())
         .add_scheduler::<Post>(ThreadAmount::Default)
         .add_scheduler::<Fetch>(ThreadAmount::Default)
-        .register_task(empty_task1())
-        .register_task(empty_task2())
+        .register_task(&test_task1(counter))
+        .register_task(&test_task2(counter))
         .apply();
 
 
 
     let now = Instant::now();
-    for _ in 0..5_000_000 {
-        let t = sh.any_task::<_, Fetch>(empty_task1());
-        let _ = black_box(t);
+    for _ in 0..5_000_0000 {
+        let t = sh.any_task::<_, Fetch>(test_task1(counter));
+        black_box(t);
 
-        let y = sh.any_task::<_, Post>(empty_task2());
-        let _ = black_box(y);
+        let y = sh.any_task::<_, Post>(test_task2(counter));
+        black_box(y);
 
     }
     let elapsed = now.elapsed();
