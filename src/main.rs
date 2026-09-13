@@ -12,7 +12,6 @@ mod worker;
 mod task;
 mod config;
 mod idx_cache;
-
 struct Post;
 struct Fetch;
 
@@ -46,19 +45,15 @@ fn main() {
     let mut sh = Scheduler::new(config::Config::default())
         .add_scheduler::<Post>(ThreadAmount::Default)
         .add_scheduler::<Fetch>(ThreadAmount::Default)
-        .register_task(&test_task1(counter))
-        .register_task(&test_task2(counter))
         .apply();
 
 
 
     let now = Instant::now();
-    for _ in 0..5_000_0000 {
-        let t = sh.any_task::<_, Fetch>(test_task1(counter));
-        black_box(t);
-
+    for _ in 0..5_000_000 {
         let y = sh.any_task::<_, Post>(test_task2(counter));
-        black_box(y);
+        sh.block_until::<_, Post>(y);
+
 
     }
     let elapsed = now.elapsed();

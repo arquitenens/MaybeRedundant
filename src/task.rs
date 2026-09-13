@@ -1,6 +1,7 @@
 use core::{mem, ptr};
 use core::ptr::{null, null_mut};
 use core::sync::atomic::AtomicBool;
+use std::cell::OnceCell;
 use crate::scheduler::Padded;
 
 #[repr(align(64))]
@@ -13,6 +14,8 @@ pub struct Task {
     pub(crate) data: *const (),
     pub(crate) dropper: unsafe fn(*const ()),
 }
+unsafe impl Send for Task {}
+unsafe impl Sync for Task {}
 
 trait Taskable{
     unsafe fn execute(this: *const ());

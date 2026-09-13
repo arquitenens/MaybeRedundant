@@ -1,16 +1,20 @@
 use crate::scheduler::WORKER_STATE;
 use crate::task::Task;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::cell::OnceCell;
+use std::iter::once;
+use std::ptr;
 use std::sync::atomic::Ordering::Release;
+use std::sync::OnceLock;
 use std::thread::sleep;
 use std::time::Duration;
 
-struct UnsafePtr<T>(*mut T);
-unsafe impl<T> Send for UnsafePtr<T> {}
+
 
 pub(crate) struct Worker{
     pub(crate) idx: usize,
 
+    pub(crate) tid: usize,
     //signal to stop execution of the worker, usually when the parent is being dropped
     pub(crate) signal: &'static AtomicBool,
 
@@ -23,11 +27,16 @@ pub(crate) struct Worker{
     has_heartbeat: &'static AtomicBool,
 }
 
+unsafe fn noop_call(_: *const ()) {}
+static EMPTY_TASK: Task = Task::empty();
+
+
 
 impl Worker {
     pub(crate) fn new(idx: usize, slot: usize, has_heartbeat: &'static AtomicBool, signal: &'static AtomicBool, current_task: AtomicPtr<Task>) -> Self {
         Self{
             idx,
+            tid: slot,
             has_heartbeat,
             signal,
             current_task,
@@ -53,6 +62,7 @@ impl Worker {
                     break;
                 }
 
+
                 let current_task = self.current_task.load(Ordering::Acquire);
 
                 if current_task.is_null() {
@@ -64,12 +74,8 @@ impl Worker {
                 }
 
                 (*current_task).execute();
-
-                //let ptr = WORKER_STATE[self.idx].get().as_ptr();
-                current_task.replace(Task::empty());
-
-                //ptr.write_volatile(*ptr | 1 << self.idx);
-                WORKER_STATE[self.idx].get().fetch_or(1 << self.idx, Release);
+                let _ = current_task.replace(Task::empty());
+                WORKER_STATE[self.tid].get().fetch_or(1 << self.idx, Release);
 
             }
         }

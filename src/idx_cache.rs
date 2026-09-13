@@ -76,6 +76,7 @@ pub trait IdxCache{
 
     }
     //I don't need a valid instance of T
+    //This is no doubt really unsafe but no one has access to it but me so meh
     #[inline]
     fn empty<'a, T>() -> &'a Self where Self: Sized {
         unsafe {
@@ -121,6 +122,7 @@ pub trait FIDCache{
 
     }
     //I don't need a valid instance of T
+    #[inline]
     fn empty<'a, T>() -> &'a Self where Self: Sized {
         unsafe {
             transmute(&MaybeUninit::<T>::zeroed())

@@ -113,6 +113,8 @@ impl Scheduler {
         //use the "no_op_added" inside-of the memory indexing so the cpu cannot start executing until the writes/reads are done
         //though its only 0, it doesn't change anything
 
+        //println!("offset {offset}, available {available_idx}");
+
         let slot: *mut Task = unsafe {&raw mut TASK_SLOTS[offset + available_idx + no_op_added] as *mut Task};
         unsafe {slot.write_volatile(Task::new(raw))};
 
@@ -128,6 +130,18 @@ impl Scheduler {
         let old = unsafe {*DIRTY_ITER.as_ptr()};
         unsafe {DIRTY_ITER.as_ptr().write(old + 1)};
         return Ok(())
+    }
+    pub(crate) fn block_until<F: FnMut(), For: IdxCache>(&mut self, busy: Result<(), WorkerError<F>>){
+        match busy {
+            Ok(()) => {},
+            Err(WorkerError::Busy(task)) => {
+                let mut temp = task;
+                while let Err(WorkerError::Busy(t)) = self.any_task::<_, For>(temp) {
+                    temp = t;
+                }
+            }
+            Err(WorkerError::Misc) => {}
+        }
     }
 }
 
@@ -160,6 +174,7 @@ impl SubScheduler {
 
     pub(crate) fn new<T: IdxCache>(offset: usize, workers: usize) -> *mut Self {
         let tid = T::empty::<T>().get_tid();
+        
 
         assert!(tid < MAX_SUB_SCHEDULERS, "TID greater than MAX_SUB_SCHEDULERS");
         assert!(offset + workers <= unsafe {(*&raw mut TASK_SLOTS).len()}, "not enough global task slots for this sub_scheduler");

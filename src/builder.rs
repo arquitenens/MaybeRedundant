@@ -13,8 +13,7 @@ pub struct SchedulerBuilder{
     pub(crate) config: Config,
     //not yet completed scheduler
     pub(crate) incomplete: Scheduler,
-    //Since every registration increments this it means a type that's not implemented it
-    //will give an index greater than this registration
+
     pub(crate) registrations: usize,
 
     pub(crate) total_workers: usize
@@ -38,8 +37,6 @@ impl SchedulerBuilder {
 
         #[cfg(debug_assertions)]
         println!("sh: {:p}", sh);
-        
-        let x = T::empty::<T>().get_tid();
 
         unsafe {self.incomplete.generic_schedulers[T::empty::<T>().get_tid()] = Padded(sh)};
         return self
