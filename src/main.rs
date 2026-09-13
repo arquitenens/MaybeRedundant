@@ -51,9 +51,10 @@ fn main() {
 
     let now = Instant::now();
     for _ in 0..5_000_000 {
-        let y = sh.any_task::<_, Post>(test_task2(counter));
+        let y = sh.any_task::<_, Post>(empty_task1());
         sh.block_until::<_, Post>(y);
-
+        let t = sh.any_task::<_, Fetch>(empty_task2());
+        sh.block_until::<_, Fetch>(t)
 
     }
     let elapsed = now.elapsed();

@@ -16,7 +16,8 @@ use crate::idx_cache::{FIDCache, IdxCache};
 
 //global task slots
 //due to how FID works duplicates are impossible meaning 128 unique Tasks can be stored in a program
-pub static mut TASK_SLOTS: [Option<Task>; 128] = [const { None }; 128];
+
+pub static mut TASK_SLOTS: [Task; 128] = [const { Task::empty() }; 128];
 
 //Each Worker gets their own reference to this
 pub(crate) static WORKER_STATE: [Padded<AtomicU64>; MAX_SUB_SCHEDULERS] = [const { Padded(AtomicU64::new(0)) }; MAX_SUB_SCHEDULERS];
@@ -174,7 +175,7 @@ impl SubScheduler {
 
     pub(crate) fn new<T: IdxCache>(offset: usize, workers: usize) -> *mut Self {
         let tid = T::empty::<T>().get_tid();
-        
+
 
         assert!(tid < MAX_SUB_SCHEDULERS, "TID greater than MAX_SUB_SCHEDULERS");
         assert!(offset + workers <= unsafe {(*&raw mut TASK_SLOTS).len()}, "not enough global task slots for this sub_scheduler");

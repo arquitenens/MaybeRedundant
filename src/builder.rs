@@ -46,7 +46,7 @@ impl SchedulerBuilder {
     pub fn register_task<F: FIDCache + FnMut()>(self, exec: &F) -> Self{
         let raw_task: *mut F = exec as *const F as *mut _;
         let task = Task::new(raw_task);
-        unsafe {TASK_SLOTS[exec.get_fid()].replace(task)};
+        unsafe {TASK_SLOTS[exec.get_fid()] = task};
         return self
     }
 
