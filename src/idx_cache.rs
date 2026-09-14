@@ -9,6 +9,7 @@ const ADDRESS_SPACE_BITS: usize = 48;
 
 //non-static type_id replacement
 //must be inline never so llvm doesn't break the recursion
+//This probably only works on llvm or as long as rustc is using it so pfffttt 
 #[inline(never)]
 fn private_tid<T: IdxCache>(own: &T) -> usize {
     let _unique_t: fn(&T) -> &T = |x|{

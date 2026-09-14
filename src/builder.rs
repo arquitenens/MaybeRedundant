@@ -41,14 +41,7 @@ impl SchedulerBuilder {
         unsafe {self.incomplete.generic_schedulers[T::empty::<T>().get_tid()] = Padded(sh)};
         return self
     }
-
-    //TODO this function is bound to be replaced with an attribute macro and is not there to stay
-    pub fn register_task<F: FIDCache + FnMut()>(self, exec: &F) -> Self{
-        let raw_task: *mut F = exec as *const F as *mut _;
-        let task = Task::new(raw_task);
-        unsafe {TASK_SLOTS[exec.get_fid()] = task};
-        return self
-    }
+    
 
     pub fn apply(self) -> Scheduler{
         self.incomplete

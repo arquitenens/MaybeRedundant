@@ -9,10 +9,29 @@ use core::arch::asm;
 use std::ptr::null_mut;
 use core::sync::atomic::Ordering::Release;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::mem::{transmute, transmute_copy};
 use std::sync::atomic::AtomicUsize;
 use std::thread::JoinHandle;
 use crate::builder;
 use crate::idx_cache::{FIDCache, IdxCache};
+
+
+#[macro_export]
+macro_rules! create_task {
+    ($task:ident($($arg:expr),*)) => {
+        Scheduler::create_task(|| $task($($arg),*))
+    };
+}
+
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct TaskWrapper<F: FnMut()>(F);
+impl<F: FnMut()> TaskWrapper<F> {
+    fn into_inner(self) -> F {
+
+        self.0
+    }
+}
 
 //global task slots
 //due to how FID works duplicates are impossible meaning 128 unique Tasks can be stored in a program
@@ -39,7 +58,7 @@ impl<T> Padded<T> {
 
 #[derive(Debug)]
 pub(crate) enum WorkerError<F: FnMut()>{
-    Busy(F),
+    Busy(TaskWrapper<F>),
     Misc,
 }
 
@@ -61,14 +80,13 @@ impl Scheduler {
     }
 
     #[inline]
-    pub(crate) fn any_task<F, T>(&mut self, exec: F) -> Result<(), WorkerError<F>>
+    pub fn any_task<F, T>(&mut self, exec: TaskWrapper<F>) -> Result<(), WorkerError<F>>
     where F: FIDCache + FnMut(),
           T: IdxCache,
     {
         let tid = T::empty::<T>().get_tid();
-        let fid = exec.get_fid();
 
-        if tid >= MAX_SUB_SCHEDULERS || fid >= MAX_WORKERS_PER_SCHED {
+        if tid >= MAX_SUB_SCHEDULERS {
             core::hint::cold_path();
             panic!("You tried to input types that have not been registered yet into either the register or this function")
         }
@@ -89,14 +107,12 @@ impl Scheduler {
         unsafe {WORKER_STATE[tid].get().as_ptr().write_volatile(available_workers & (!(1u64 << available_idx)))};
         //create true dependency to prevent OoOe
         let mut _no_use = unsafe {WORKER_STATE[tid].get().as_ptr().read_volatile()};
-        //the volatile and blackbox are purely for the compiler to not do any tricks
+        //the volatile are purely for the compiler to not do any tricks
         //and try to reorder and or eliminate any operations
-        black_box(_no_use);
         //get the correct offset from the sub_scheduler for the given workers
         let offset = unsafe { (*self.generic_schedulers[tid].0).offset };
         //the reference should be fine since the function providing the closure is global and "static"
-        //TODO if reference isn't fine gonna try working with allocating the tasks either in .data or heap or something like that idk
-        let raw = ptr::from_ref(&exec) as *mut F;
+        let raw = ptr::from_ref(&(exec)) as *mut F;
         //To my knowledge Zen5 doesn't have a dependency elimination (zeroing idioms) on
         //add x, !x and only on Cmp, Sub, Xor and SBB
         //TODO i dont know about other platforms and should probably be some cfg flags
@@ -110,29 +126,18 @@ impl Scheduler {
             inout(reg) _no_use);
             _no_use as usize
         };
+
         //overwrite the previous slot after setting the worker to busy
         //use the "no_op_added" inside-of the memory indexing so the cpu cannot start executing until the writes/reads are done
         //though its only 0, it doesn't change anything
-
-        //println!("offset {offset}, available {available_idx}");
-
-        let slot: *mut Task = unsafe {&raw mut TASK_SLOTS[offset + available_idx + no_op_added] as *mut Task};
+        let slot: *mut Task = unsafe { &raw mut TASK_SLOTS[offset + available_idx + no_op_added] };
         unsafe {slot.write_volatile(Task::new(raw))};
 
-        //heart beat test
-        #[cfg(debug_assertions)]
-        if self.iterations % 50 == 0{
-            //TODO
-        }
-
-
-        //dirty iteration check
-        //TODO remove, its bad and unsafe
-        let old = unsafe {*DIRTY_ITER.as_ptr()};
-        unsafe {DIRTY_ITER.as_ptr().write(old + 1)};
         return Ok(())
     }
-    pub(crate) fn block_until<F: FnMut(), For: IdxCache>(&mut self, busy: Result<(), WorkerError<F>>){
+
+    ///block until a worker received the task and NOT until the task has finished executing
+    pub fn block_until<F: FnMut(), For: IdxCache>(&mut self, busy: Result<(), WorkerError<F>>){
         match busy {
             Ok(()) => {},
             Err(WorkerError::Busy(task)) => {
@@ -143,6 +148,17 @@ impl Scheduler {
             }
             Err(WorkerError::Misc) => {}
         }
+    }
+    #[inline]
+    ///this just exists for if you want to be explicit you should generally use the macro
+    pub fn create_task<T: Send + Sync + FnOnce() -> F, F>(task: T) -> TaskWrapper<F> where F: FnMut() {
+        TaskWrapper(task())
+    }
+
+    //partially ignores borrowing rules
+    ///you should generally just go through the create_task macro of function
+    pub unsafe fn make_task_wrapper<F: FnMut()>(task: F) -> TaskWrapper<F> {
+        return transmute_copy(&task)
     }
 }
 
