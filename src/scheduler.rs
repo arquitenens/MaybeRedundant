@@ -13,7 +13,9 @@ use std::mem::{transmute, transmute_copy};
 use std::sync::atomic::AtomicUsize;
 use std::thread::JoinHandle;
 use crate::builder;
+use core::cell::RefCell;
 use crate::idx_cache::{FIDCache, IdxCache};
+
 
 
 #[macro_export]
@@ -137,7 +139,7 @@ impl Scheduler {
     }
 
     ///block until a worker received the task and NOT until the task has finished executing
-    pub fn block_until<F: FnMut(), For: IdxCache>(&mut self, busy: Result<(), WorkerError<F>>){
+    pub fn block_until_arrival<F: FnMut(), For: IdxCache>(&mut self, busy: Result<(), WorkerError<F>>){
         match busy {
             Ok(()) => {},
             Err(WorkerError::Busy(task)) => {
@@ -151,13 +153,13 @@ impl Scheduler {
     }
     #[inline]
     ///this just exists for if you want to be explicit you should generally use the macro
-    pub fn create_task<T: Send + Sync + FnOnce() -> F, F>(task: T) -> TaskWrapper<F> where F: FnMut() {
+    pub fn create_task<T: 'static + FnOnce() -> F, F>(task: T) -> TaskWrapper<F> where F: FnMut() {
         TaskWrapper(task())
     }
 
     //partially ignores borrowing rules
     ///you should generally just go through the create_task macro of function
-    pub unsafe fn make_task_wrapper<F: FnMut()>(task: F) -> TaskWrapper<F> {
+    pub unsafe fn unchecked_task_wrapper<F: FnMut()>(task: F) -> TaskWrapper<F> {
         return transmute_copy(&task)
     }
 }
