@@ -60,17 +60,19 @@ fn main() {
     //    Scheduler::create_task(|| test_task1, counter1)
     let now = Instant::now();
     let mut counter = 0;
+
+
     unsafe {
-        while now.elapsed() <= Duration::from_millis(5) {
-            let create1 = create_task!(test_task3(atomic_counter));
-            let create2 = create_task!(test_task3(atomic_counter));
-            let y = sh.any_task::<_, Post>(create1);
-            sh.block_until_arrival::<_, Post>(y);
-            let t = sh.any_task::<_, Fetch>(create2);
-            sh.block_until_arrival::<_, Fetch>(t);
-            counter += 1;
-        }
-    }
+         while now.elapsed() <= Duration::from_millis(1000) {
+             let create1 = create_task!(test_task3(atomic_counter));
+             let create2 = create_task!(test_task3(atomic_counter));
+             let y = sh.any_task::<_, Post>(create1);
+             sh.block_until_arrival::<_, Post>(y);
+             let t = sh.any_task::<_, Fetch>(create2);
+             sh.block_until_arrival::<_, Fetch>(t);
+             counter += 1;
+         }
+     }
 
 
     println!("counter: {}", counter);

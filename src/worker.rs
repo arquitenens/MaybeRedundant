@@ -63,11 +63,8 @@ impl Worker {
                 }
 
 
-                let mut current_task = self.current_task.load(Ordering::Acquire);
+                let current_task = self.current_task.load(Ordering::Acquire);
 
-                if current_task.is_null() {
-                    continue;
-                }
 
                 if (*current_task).data.is_null(){
                     continue;

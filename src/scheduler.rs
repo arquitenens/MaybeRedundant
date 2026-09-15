@@ -11,9 +11,11 @@ use core::sync::atomic::Ordering::Release;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use std::mem::{transmute, transmute_copy};
 use std::sync::atomic::AtomicUsize;
-use std::thread::JoinHandle;
+use std::thread::{sleep, JoinHandle};
 use crate::builder;
 use core::cell::RefCell;
+use std::sync::atomic::Ordering::Acquire;
+use std::time::Duration;
 use crate::idx_cache::{FIDCache, IdxCache};
 
 
@@ -41,6 +43,7 @@ impl<F: FnMut()> TaskWrapper<F> {
 pub static mut TASK_SLOTS: [Task; 128] = [const { Task::empty() }; 128];
 
 //Each Worker gets their own reference to this
+//READ ONLY FROM SCHEDULER
 pub(crate) static WORKER_STATE: [Padded<AtomicU64>; MAX_SUB_SCHEDULERS] = [const { Padded(AtomicU64::new(0)) }; MAX_SUB_SCHEDULERS];
 
 #[repr(align(64))]
@@ -66,7 +69,8 @@ pub(crate) enum WorkerError<F: FnMut()>{
 
 pub(crate) struct Scheduler {
     pub(crate) generic_schedulers: [Padded<*mut SubScheduler>; MAX_SUB_SCHEDULERS],
-    iterations: usize,
+    worker_state_copy: [u64; MAX_WORKERS_PER_SCHED],
+    iterations: u64,
 }
 
 pub(crate) static WORKER_AVERAGE: AtomicUsize = AtomicUsize::new(0);
@@ -75,7 +79,11 @@ impl Scheduler {
     pub(crate) fn new(config: Config) -> SchedulerBuilder {
         SchedulerBuilder{
             config,
-            incomplete: Scheduler { generic_schedulers: [Padded(ptr::null_mut()); MAX_SUB_SCHEDULERS], iterations: 0 },
+            incomplete: Scheduler {
+                generic_schedulers: [Padded(ptr::null_mut()); MAX_SUB_SCHEDULERS],
+                worker_state_copy: [0; MAX_WORKERS_PER_SCHED],
+                iterations: 0,
+            },
             registrations: 0,
             total_workers: 0,
         }
@@ -86,54 +94,34 @@ impl Scheduler {
     where F: FIDCache + FnMut(),
           T: IdxCache,
     {
+
         let tid = T::empty::<T>().get_tid();
+
 
         if tid >= MAX_SUB_SCHEDULERS {
             core::hint::cold_path();
             panic!("You tried to input types that have not been registered yet into either the register or this function")
         }
 
-        let available_workers = WORKER_STATE[tid].get().load(Ordering::Acquire);
-
+        //synchronize copies
+        let available_workers = self.worker_state_copy[tid];
 
         let available_idx = available_workers.trailing_zeros() as usize;
 
+        //sleep(Duration::from_nanos(80));
+        if available_idx == 0 {
+            self.worker_state_copy[tid] = WORKER_STATE[tid].get().load(Acquire);
 
-        if available_idx == 64 {
+            WORKER_STATE[tid].get().store(0, Release);
             return Err(WorkerError::Busy(exec));
         }
-
-        //SAFETY this is not a fetch_and due to the fact that the Scheduler is single threaded
-        //and its only requirement is "finish this write before the next function call"
-        //And the dependency prevents the cpu from reordering
-        unsafe {WORKER_STATE[tid].get().as_ptr().write_volatile(available_workers & (!(1u64 << available_idx)))};
-        //create true dependency to prevent OoOe
-        let mut _no_use = unsafe {WORKER_STATE[tid].get().as_ptr().read_volatile()};
-        //the volatile are purely for the compiler to not do any tricks
-        //and try to reorder and or eliminate any operations
-        //get the correct offset from the sub_scheduler for the given workers
+        self.worker_state_copy[tid] &= !(1 << available_idx);
         let offset = unsafe { (*self.generic_schedulers[tid].0).offset };
         //the reference should be fine since the function providing the closure is global and "static"
         let raw = ptr::from_ref(&(exec)) as *mut F;
-        //To my knowledge Zen5 doesn't have a dependency elimination (zeroing idioms) on
-        //add x, !x and only on Cmp, Sub, Xor and SBB
-        //TODO i dont know about other platforms and should probably be some cfg flags
-        //TODO but the operation is pretty opaque in general
-        let no_op_added: usize = unsafe {
-            let negated = _no_use as usize;
-            asm!(
-            "neg {0}",
-            "add {1}, {0}",
-            in(reg) negated,
-            inout(reg) _no_use);
-            _no_use as usize
-        };
-
-        //overwrite the previous slot after setting the worker to busy
-        //use the "no_op_added" inside-of the memory indexing so the cpu cannot start executing until the writes/reads are done
-        //though its only 0, it doesn't change anything
-        let slot: *mut Task = unsafe { &raw mut TASK_SLOTS[offset + available_idx + no_op_added] };
+        let slot: *mut Task = unsafe { &raw mut TASK_SLOTS[offset + available_idx]};
         unsafe {slot.write_volatile(Task::new(raw))};
+
 
         return Ok(())
     }
