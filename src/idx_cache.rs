@@ -31,14 +31,21 @@ fn private_tid<T: IdxCache>(own: &T) -> usize {
     _unique_t as usize
 }
 
-fn private_search_style<T: IdxCache>(_ident: &T, table: &[usize], tid: usize) -> Result<usize, usize> {
+fn private_search_style<T: IdxCache>(_ident: &T, table: &[usize; MAX_ID_SLOTS], tid: usize) -> Result<usize, usize> {
     black_box(_ident);
+    //TODO maybe vectorize? though the compiler will surely do it for me
     for (i, v) in table.iter().enumerate(){
         if *v == tid {
             return Result::Ok(i);
         }
     }
     return Result::Err(0);
+}
+
+#[inline]
+fn bucket(tid: u64) -> usize {
+    let x = tid >> 4;
+    ((x.wrapping_mul(0x9E3779B97F4A7C15)) >> 59) as usize & 31
 }
 pub trait IdxCache{
     ///The Tid might not appear in the order you registered them but is always the same and increments sequentially
@@ -48,12 +55,7 @@ pub trait IdxCache{
 
         let tid = private_tid(&self);
 
-        //Max is ADDRESS_SPACE_BITS / 2 or 24 with 48 as address space;
-        //a few times reduction in average case of N linear search while not being too expensive
-        let addr = tid & ((1u64 << ADDRESS_SPACE_BITS) - 1) as usize;
-        let mask = addr & 0x5555555555555555;
-        let extra = (tid & 4095) % 7;
-        let bucket: usize = ((mask.count_ones() + extra as u32) & 31) as usize;
+        let bucket = bucket(tid as u64);
 
         //the reference dies before the is indexed so it's fine
         let item = private_search_style(&self, unsafe {&*&raw const ID_TABLE[bucket]}, tid);
@@ -77,9 +79,9 @@ pub trait IdxCache{
 
     }
     //I don't need a valid instance of T
-    //This is no doubt really unsafe but no one has access to it but me so meh
+    //This is no doubt really unsafe
     #[inline]
-    fn empty<'a, T>() -> &'a Self where Self: Sized {
+    unsafe fn empty<'a, T>() -> &'a Self where Self: Sized {
         unsafe {
             transmute(&MaybeUninit::<T>::uninit())
         }
@@ -123,8 +125,9 @@ pub trait FIDCache{
 
     }
     //I don't need a valid instance of T
+    //but still pretty unsafe
     #[inline]
-    fn empty<'a, T>() -> &'a Self where Self: Sized {
+    unsafe fn empty<'a, T>() -> &'a Self where Self: Sized {
         unsafe {
             transmute(&MaybeUninit::<T>::zeroed())
         }

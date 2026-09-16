@@ -24,7 +24,7 @@ impl SchedulerBuilder {
         self.registrations += 1;
 
         #[cfg(debug_assertions)]
-        println!("added scheduler Name: {}, Idx: {}", type_name::<T>(), T::empty::<T>().get_tid());
+        println!("added scheduler Name: {}, Idx: {}", type_name::<T>(), unsafe {T::empty::<T>().get_tid()});
 
         let workers = match thread_overwrite {
             ThreadAmount::Default => self.config.threads_per_sub_sched,
@@ -38,6 +38,7 @@ impl SchedulerBuilder {
         #[cfg(debug_assertions)]
         println!("sh: {:p}", sh);
 
+        self.incomplete.worker_state_copy[unsafe {T::empty::<T>().get_tid()}] = (1 << workers) - 1;
         unsafe {self.incomplete.generic_schedulers[T::empty::<T>().get_tid()] = Padded(sh)};
         return self
     }

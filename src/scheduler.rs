@@ -14,6 +14,8 @@ use std::sync::atomic::AtomicUsize;
 use std::thread::{sleep, JoinHandle};
 use crate::builder;
 use core::cell::RefCell;
+use std::cell::OnceCell;
+use std::slice;
 use std::sync::atomic::Ordering::Acquire;
 use std::time::Duration;
 use crate::idx_cache::{FIDCache, IdxCache};
@@ -32,15 +34,19 @@ macro_rules! create_task {
 pub struct TaskWrapper<F: FnMut()>(F);
 impl<F: FnMut()> TaskWrapper<F> {
     fn into_inner(self) -> F {
-
         self.0
     }
 }
 
-//global task slots
-//due to how FID works duplicates are impossible meaning 128 unique Tasks can be stored in a program
+//The task every worker gets
+pub static mut MAIL_BOX: [Task; 64] = [const { Task::empty() }; 64];
 
-pub static mut TASK_SLOTS: [Task; 128] = [const { Task::empty() }; 128];
+pub static mut TASK_SLOTS: [u8; 4096] = [0; 4096];
+
+pub static mut OCCUPIED_BYTES: usize = 0;
+
+//due to how FID works duplicates are impossible meaning 128 unique Tasks can be stored in a program
+pub static mut TASK_POSITION_LOOKUP: [OnceCell<usize>; 128] = [const {OnceCell::new()}; 128];
 
 //Each Worker gets their own reference to this
 //READ ONLY FROM SCHEDULER
@@ -69,7 +75,7 @@ pub(crate) enum WorkerError<F: FnMut()>{
 
 pub(crate) struct Scheduler {
     pub(crate) generic_schedulers: [Padded<*mut SubScheduler>; MAX_SUB_SCHEDULERS],
-    worker_state_copy: [u64; MAX_WORKERS_PER_SCHED],
+    pub(crate) worker_state_copy: [u64; MAX_WORKERS_PER_SCHED],
     iterations: u64,
 }
 
@@ -89,37 +95,94 @@ impl Scheduler {
         }
     }
 
-    #[inline]
-    pub fn any_task<F, T>(&mut self, exec: TaskWrapper<F>) -> Result<(), WorkerError<F>>
+    pub fn any_task<'a, F, T>(&mut self, exec: TaskWrapper<F>) -> Result<(), WorkerError<F>>
     where F: FIDCache + FnMut(),
           T: IdxCache,
     {
 
-        let tid = T::empty::<T>().get_tid();
+        let tid = unsafe {T::empty::<T>().get_tid()};
+        let fid = exec.get_fid();
 
 
         if tid >= MAX_SUB_SCHEDULERS {
             core::hint::cold_path();
             panic!("You tried to input types that have not been registered yet into either the register or this function")
         }
+        let sub_scheduler = unsafe { &*self.generic_schedulers[tid].0};
 
-        //synchronize copies
-        let available_workers = self.worker_state_copy[tid];
+        let available_idx: usize;
 
-        let available_idx = available_workers.trailing_zeros() as usize;
+        //it might happen that the last N % default_workers tasks are not delivered with the lock_less approach
+        //it's better for batches of size, well, N % default_worker
+        #[cfg(feature = "lock_less")]
+        {
+            let available_workers = self.worker_state_copy[tid];
+            //I don't know if the false dependency on tzcnt is still a thing
+            //I have also seen it being a problem on popcnt but that seems to be resolved (?)
+            unsafe {
+                asm!(
+                "xor {dst}, {dst}",
+                "tzcnt {dst}, {src}",
+                dst = out(reg) available_idx,
+                src = in(reg) available_workers,
+                )
+            }
 
-        //sleep(Duration::from_nanos(80));
-        if available_idx == 0 {
-            self.worker_state_copy[tid] = WORKER_STATE[tid].get().load(Acquire);
-
-            WORKER_STATE[tid].get().store(0, Release);
-            return Err(WorkerError::Busy(exec));
+            if available_idx == 64 {
+                let completed = WORKER_STATE[tid].get().load(Acquire);
+                if completed.count_ones() as usize == sub_scheduler.workers{
+                    self.worker_state_copy[tid] = completed;
+                    //TODO unless i change this code the store is fine.. i hope i dont forget
+                    WORKER_STATE[tid].get().store(0, Release);
+                }
+                return Err(WorkerError::Busy(exec));
+            }
+            self.worker_state_copy[tid] &= !(1 << available_idx);
         }
-        self.worker_state_copy[tid] &= !(1 << available_idx);
-        let offset = unsafe { (*self.generic_schedulers[tid].0).offset };
-        //the reference should be fine since the function providing the closure is global and "static"
-        let raw = ptr::from_ref(&(exec)) as *mut F;
-        let slot: *mut Task = unsafe { &raw mut TASK_SLOTS[offset + available_idx]};
+        #[cfg(not(feature = "lock_less"))]
+        {
+            let available_workers = WORKER_STATE[tid].get().load(Acquire);
+            unsafe {
+                asm!(
+                "xor {dst}, {dst}",
+                "tzcnt {dst}, {src}",
+                dst = out(reg) available_idx,
+                src = in(reg) available_workers,
+                )
+            }
+            if available_idx == 64 {
+                return Err(WorkerError::Busy(exec));
+            }
+            WORKER_STATE[tid].get().fetch_and(!(1 << available_idx), Release);
+        }
+
+        //Well get or init the size of a function if it hasn't been seen before
+        let is_init = unsafe {TASK_POSITION_LOOKUP[fid].get().is_some()};
+
+        let task_offset = *unsafe {TASK_POSITION_LOOKUP[fid].get_or_init(|| {
+            *&raw mut OCCUPIED_BYTES
+        })};
+
+
+        if !is_init{
+            unsafe {
+                if *&raw mut OCCUPIED_BYTES + size_of::<F>() <= 4096{
+                    let dest = (&raw mut TASK_SLOTS[OCCUPIED_BYTES]) as *mut F;
+                    dest.write(exec.into_inner());
+                    OCCUPIED_BYTES += size_of::<F>();
+                }else {
+                    panic!("You dont have enough space to store more unique tasks, fid {fid}")
+                }
+            }
+        }
+
+        let offset = sub_scheduler.offset;
+        let slot: *mut Task = unsafe { &raw mut MAIL_BOX[offset + available_idx]};
+
+        let raw = unsafe {
+            (&raw mut TASK_SLOTS[task_offset]) as *mut F
+        };
+
         unsafe {slot.write_volatile(Task::new(raw))};
 
 
@@ -147,7 +210,7 @@ impl Scheduler {
 
     //partially ignores borrowing rules
     ///you should generally just go through the create_task macro of function
-    pub unsafe fn unchecked_task_wrapper<F: FnMut()>(task: F) -> TaskWrapper<F> {
+    pub unsafe fn unchecked_task_wrapper<'a, F: FnMut()>(task: F) -> TaskWrapper<F> {
         return transmute_copy(&task)
     }
 }
@@ -180,14 +243,14 @@ static mut SUB_SCHEDULERS:
 impl SubScheduler {
 
     pub(crate) fn new<T: IdxCache>(offset: usize, workers: usize) -> *mut Self {
-        let tid = T::empty::<T>().get_tid();
+        let tid = unsafe {T::empty::<T>().get_tid()};
 
 
         assert!(tid < MAX_SUB_SCHEDULERS, "TID greater than MAX_SUB_SCHEDULERS");
-        assert!(offset + workers <= unsafe {(*&raw mut TASK_SLOTS).len()}, "not enough global task slots for this sub_scheduler");
+        assert!(offset + workers <= unsafe {(*&raw mut MAIL_BOX).len()}, "not enough global task slots for this sub_scheduler");
 
 
-        //set uo the masks
+        //set up the masks
         let mut mask = 0u64;
         mask |= (1 << workers) - 1;
 
@@ -217,7 +280,7 @@ impl SubScheduler {
                                          tid,
                                          (*incomplete_schedulers).heartbeat_test[global_slot].get(),
                                          &(*incomplete_schedulers).worker_terminate.0[w],
-                                         AtomicPtr::new(&raw mut TASK_SLOTS[global_slot] as *mut Task)
+                                         AtomicPtr::new(&raw mut MAIL_BOX[global_slot] as *mut Task)
                 );
                 let h = std::thread::spawn(move || {
                     worker.run()
