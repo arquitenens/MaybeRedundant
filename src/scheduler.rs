@@ -45,6 +45,8 @@ pub static mut TASK_SLOTS: [u8; 4096] = [0; 4096];
 
 pub static mut OCCUPIED_BYTES: usize = 0;
 
+static STALE_ATOMIC: [Padded<AtomicU64>; MAX_SUB_SCHEDULERS] = [const {Padded(AtomicU64::new(0))}; MAX_SUB_SCHEDULERS];
+
 //due to how FID works duplicates are impossible meaning 128 unique Tasks can be stored in a program
 pub static mut TASK_POSITION_LOOKUP: [OnceCell<usize>; 128] = [const {OnceCell::new()}; 128];
 
@@ -66,10 +68,16 @@ impl<T> Padded<T> {
         &self.0
     }
 }
+#[derive(Debug)]
+enum LockVariant{
+    Weak,
+    Strong,
+    None
+}
 
 #[derive(Debug)]
 pub(crate) enum WorkerError<F: FnMut()>{
-    Busy(TaskWrapper<F>),
+    Busy(TaskWrapper<F>, LockVariant),
     Misc,
 }
 
@@ -78,9 +86,6 @@ pub(crate) struct Scheduler {
     pub(crate) worker_state_copy: [u64; MAX_WORKERS_PER_SCHED],
     iterations: u64,
 }
-
-pub(crate) static WORKER_AVERAGE: AtomicUsize = AtomicUsize::new(0);
-pub(crate) static DIRTY_ITER: AtomicU64 = AtomicU64::new(0);
 impl Scheduler {
     pub(crate) fn new(config: Config) -> SchedulerBuilder {
         SchedulerBuilder{
@@ -94,15 +99,14 @@ impl Scheduler {
             total_workers: 0,
         }
     }
-
-    pub fn any_task<'a, F, T>(&mut self, exec: TaskWrapper<F>) -> Result<(), WorkerError<F>>
+    ///it might happen that the last N % default_workers tasks are not delivered with the lock_less approach
+    ///it's better for batches of size, well, N % default_worker
+    ///has the lowest update guarantee and singular calls might not even be executed at all
+    pub fn any_task_lockless<F, T>(&mut self, exec: TaskWrapper<F>) -> Result<(), WorkerError<F>>
     where F: FIDCache + FnMut(),
           T: IdxCache,
     {
-
         let tid = unsafe {T::empty::<T>().get_tid()};
-        let fid = exec.get_fid();
-
 
         if tid >= MAX_SUB_SCHEDULERS {
             core::hint::cold_path();
@@ -112,50 +116,115 @@ impl Scheduler {
 
         let available_idx: usize;
 
-        //it might happen that the last N % default_workers tasks are not delivered with the lock_less approach
-        //it's better for batches of size, well, N % default_worker
-        #[cfg(feature = "lock_less")]
-        {
-            let available_workers = self.worker_state_copy[tid];
-            //I don't know if the false dependency on tzcnt is still a thing
-            //I have also seen it being a problem on popcnt but that seems to be resolved (?)
-            unsafe {
-                asm!(
-                "xor {dst}, {dst}",
-                "tzcnt {dst}, {src}",
-                dst = out(reg) available_idx,
-                src = in(reg) available_workers,
-                )
-            }
-
-            if available_idx == 64 {
-                let completed = WORKER_STATE[tid].get().load(Acquire);
-                if completed.count_ones() as usize == sub_scheduler.workers{
-                    self.worker_state_copy[tid] = completed;
-                    //TODO unless i change this code the store is fine.. i hope i dont forget
-                    WORKER_STATE[tid].get().store(0, Release);
-                }
-                return Err(WorkerError::Busy(exec));
-            }
-            self.worker_state_copy[tid] &= !(1 << available_idx);
+        let available_workers = self.worker_state_copy[tid];
+        //I don't know if the false dependency on tzcnt is still a thing
+        //I have also seen it being a problem on popcnt but that seems to be resolved (?)
+        unsafe {
+            asm!(
+            "xor {dst}, {dst}",
+            "tzcnt {dst}, {src}",
+            dst = out(reg) available_idx,
+            src = in(reg) available_workers,
+            )
         }
-        #[cfg(not(feature = "lock_less"))]
-        {
-            let available_workers = WORKER_STATE[tid].get().load(Acquire);
-            unsafe {
-                asm!(
-                "xor {dst}, {dst}",
-                "tzcnt {dst}, {src}",
-                dst = out(reg) available_idx,
-                src = in(reg) available_workers,
-                )
+
+        if available_idx == 64 {
+            let completed = WORKER_STATE[tid].get().load(Acquire);
+            if completed.count_ones() as usize == sub_scheduler.workers{
+                self.worker_state_copy[tid] = completed;
+                //TODO unless i change this code the store is fine.. i hope i dont forget
+                WORKER_STATE[tid].get().store(0, Release);
             }
-            if available_idx == 64 {
-                return Err(WorkerError::Busy(exec));
-            }
+            return Err(WorkerError::Busy(exec, LockVariant::None));
+        }
+        self.worker_state_copy[tid] &= !(1 << available_idx);
+
+        unsafe {self.mail_task(exec, sub_scheduler, available_idx)}
+
+        return Ok(())
+    }
+
+
+    ///still has locking instructions, but they are reduced at the cost of "immediate" updates
+    ///as its first being checked if the mask even changed in the first place
+    ///with a steady stream of tasks everything should be resolved
+    pub fn any_task_weak_locking<F, T>(&mut self, exec: TaskWrapper<F>) -> Result<(), WorkerError<F>>
+    where F: FIDCache + FnMut(),
+          T: IdxCache,
+    {
+        let tid = unsafe {T::empty::<T>().get_tid()};
+
+        if tid >= MAX_SUB_SCHEDULERS {
+            core::hint::cold_path();
+            panic!("You tried to input types that have not been registered yet into either the register or this function")
+        }
+        let sub_scheduler = unsafe { &*self.generic_schedulers[tid].0};
+
+        let available_idx: usize;
+
+        let available_workers = WORKER_STATE[tid].get().load(Acquire);
+
+        let is_different = available_workers != self.worker_state_copy[tid];
+
+        unsafe {
+            asm!(
+            "xor {dst}, {dst}",
+            "tzcnt {dst}, {src}",
+            dst = out(reg) available_idx,
+            src = in(reg) available_workers,
+            )
+        }
+        if available_idx == 64 {
+            return Err(WorkerError::Busy(exec, LockVariant::Weak));
+        }
+
+        self.worker_state_copy[tid] &= !(1 << available_idx);
+        if is_different{
             WORKER_STATE[tid].get().fetch_and(!(1 << available_idx), Release);
         }
 
+        unsafe {self.mail_task(exec, sub_scheduler, available_idx)}
+
+        return Ok(())
+    }
+
+    ///No artificial buffering, immediate results but also the slowest and most prone to contention
+    pub fn any_task_locking<F, T>(&mut self, exec: TaskWrapper<F>) -> Result<(), WorkerError<F>>
+    where F: FIDCache + FnMut(),
+          T: IdxCache,
+    {
+        let tid = unsafe {T::empty::<T>().get_tid()};
+
+        if tid >= MAX_SUB_SCHEDULERS {
+            core::hint::cold_path();
+            panic!("You tried to input types that have not been registered yet into either the register or this function")
+        }
+        let sub_scheduler = unsafe { &*self.generic_schedulers[tid].0};
+
+        let available_idx: usize;
+
+
+        let available_workers = WORKER_STATE[tid].get().load(Acquire);
+        unsafe {
+            asm!(
+            "xor {dst}, {dst}",
+            "tzcnt {dst}, {src}",
+            dst = out(reg) available_idx,
+            src = in(reg) available_workers,
+            )
+        }
+        if available_idx == 64 {
+            return Err(WorkerError::Busy(exec, LockVariant::Strong));
+        }
+        WORKER_STATE[tid].get().fetch_and(!(1 << available_idx), Release);
+
+        unsafe {self.mail_task(exec, sub_scheduler, available_idx)}
+
+        return Ok(())
+    }
+
+    unsafe fn mail_task<F: FnMut()>(&mut self, exec: TaskWrapper<F>, sub_scheduler: &SubScheduler, available_idx: usize){
+        let fid = exec.get_fid();
         //Well get or init the size of a function if it hasn't been seen before
         let is_init = unsafe {TASK_POSITION_LOOKUP[fid].get().is_some()};
 
@@ -184,19 +253,18 @@ impl Scheduler {
         };
 
         unsafe {slot.write_volatile(Task::new(raw))};
-
-
-        return Ok(())
     }
 
     ///block until a worker received the task and NOT until the task has finished executing
     pub fn block_until_arrival<F: FnMut(), For: IdxCache>(&mut self, busy: Result<(), WorkerError<F>>){
         match busy {
             Ok(()) => {},
-            Err(WorkerError::Busy(task)) => {
+            Err(WorkerError::Busy(task, variant)) => {
                 let mut temp = task;
-                while let Err(WorkerError::Busy(t)) = self.any_task::<_, For>(temp) {
-                    temp = t;
+                match variant {
+                    LockVariant::None => while let Err(WorkerError::Busy(t, _)) = self.any_task_lockless::<_, For>(temp) { temp = t; }
+                    LockVariant::Weak => while let Err(WorkerError::Busy(t, _)) = self.any_task_weak_locking::<_, For>(temp) { temp = t; }
+                    LockVariant::Strong => while let Err(WorkerError::Busy(t, _)) = self.any_task_locking::<_, For>(temp) { temp = t; }
                 }
             }
             Err(WorkerError::Misc) => {}

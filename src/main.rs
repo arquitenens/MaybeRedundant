@@ -1,5 +1,5 @@
 use crate::config::ThreadAmount;
-use crate::scheduler::{Scheduler, TaskWrapper, WorkerError, DIRTY_ITER, WORKER_AVERAGE, WORKER_STATE};
+use crate::scheduler::{Scheduler, TaskWrapper, WorkerError, WORKER_STATE};
 use core::hint::black_box;
 
 use core::sync::atomic::AtomicU64;
@@ -50,7 +50,6 @@ fn empty_task2() -> impl FnMut() + Send {
 
 
 fn main() {
-    available_parallelism();
     let counter1 = Box::leak(Box::new(0u64));
     let counter2 = Box::leak(Box::new(0u64));
     let atomic_counter = Box::leak(Box::new(AtomicU64::new(0)));
@@ -66,13 +65,18 @@ fn main() {
           while now.elapsed() <= Duration::from_millis(1000) {
               let create1 = Scheduler::unchecked_task_wrapper(test_task3(atomic_counter));
               let create2 = Scheduler::unchecked_task_wrapper(test_task3(atomic_counter));
-              let y = sh.any_task::<_, Post>(create1);
+              let y = sh.any_task_locking::<_, Post>(create1);
               sh.block_until_arrival::<_, Post>(y);
-              let t = sh.any_task::<_, Fetch>(create2);
+              let t = sh.any_task_locking::<_, Fetch>(create2);
               sh.block_until_arrival::<_, Fetch>(t);
               counter += 1;
           }
      }
+
+    let now = Instant::now();
+    while now.elapsed() <= Duration::from_millis(100) {
+
+    }
 
 
 
@@ -86,8 +90,6 @@ fn main() {
     println!("counter1: {}", *counter1 + *counter2);
     println!("Elapsed: {:.2?}", elapsed);
 
-    
-    println!("iters: {:?}", DIRTY_ITER.load(Acquire));
-    println!("workers: {:?}", WORKER_AVERAGE.load(Acquire) / 1_000_000);
+
     black_box(sh);
 }
