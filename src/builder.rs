@@ -1,12 +1,7 @@
-use core::any::type_name;
-use core::mem::MaybeUninit;
-use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
 use crate::config::{Config, ThreadAmount};
-use crate::idx_cache::{FIDCache, IdxCache};
-use crate::scheduler::{Padded, Scheduler, SubScheduler, TASK_SLOTS};
-use crate::task::Task;
-
+use crate::idx_cache::IdxCache;
+use crate::scheduler::{Padded, Scheduler, SubScheduler};
+use core::any::type_name;
 
 
 pub struct SchedulerBuilder{

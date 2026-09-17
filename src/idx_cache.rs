@@ -1,7 +1,7 @@
-use std::arch::asm;
-use std::hint::black_box;
-use std::mem::{transmute, MaybeUninit};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use core::arch::asm;
+use core::hint::black_box;
+use core::mem::{transmute, MaybeUninit};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_ID_SLOTS: usize = 64;
 

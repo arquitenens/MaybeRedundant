@@ -1,14 +1,7 @@
 use crate::scheduler::WORKER_STATE;
 use crate::task::Task;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-use std::cell::OnceCell;
-use std::iter::once;
-use std::ptr;
-use std::sync::atomic::Ordering::Release;
-use std::sync::OnceLock;
-use std::thread::sleep;
-use std::time::Duration;
-
+use core::sync::atomic::Ordering::Release;
 
 
 pub(crate) struct Worker{
@@ -45,10 +38,11 @@ impl Worker {
     pub(crate) fn run(self) {
         unsafe {
             //TODO very dirty and unsafe, will cleanup so no reason to document just yet
+            //i dont know what to do with this, no pause or yield so idk
             loop {
-                if !self.has_heartbeat.load(Ordering::Relaxed){
-                    //self.has_heartbeat.store(true, Ordering::Relaxed);
-                }
+                // if !self.has_heartbeat.load(Ordering::Relaxed){
+                //     //self.has_heartbeat.store(true, Ordering::Relaxed);
+                // }
 
 
                 if self.signal.load(Ordering::Acquire) {

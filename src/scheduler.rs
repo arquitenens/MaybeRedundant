@@ -1,24 +1,17 @@
-use crate::builder::{SchedulerBuilder};
+use crate::builder::SchedulerBuilder;
 use crate::config::{Config, MAX_SUB_SCHEDULERS, MAX_WORKERS_PER_SCHED};
+use crate::idx_cache::{FIDCache, IdxCache};
 use crate::task::Task;
 use crate::worker::Worker;
-use core::hint::black_box;
-use core::mem::{ManuallyDrop, MaybeUninit};
-use core::{ptr};
 use core::arch::asm;
-use std::ptr::null_mut;
+use core::cell::OnceCell;
+use core::mem::transmute_copy;
+use core::mem::MaybeUninit;
+use core::sync::atomic::Ordering::Acquire;
 use core::sync::atomic::Ordering::Release;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
-use std::mem::{transmute, transmute_copy};
-use std::sync::atomic::AtomicUsize;
-use std::thread::{sleep, JoinHandle};
-use crate::builder;
-use core::cell::RefCell;
-use std::cell::OnceCell;
-use std::slice;
-use std::sync::atomic::Ordering::Acquire;
-use std::time::Duration;
-use crate::idx_cache::{FIDCache, IdxCache};
+use core::ptr;
+use std::thread::JoinHandle;
 
 
 
@@ -74,6 +67,8 @@ enum LockVariant{
     Strong,
     None
 }
+
+pub static IS_DIFFERENT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub(crate) enum WorkerError<F: FnMut()>{
@@ -148,6 +143,7 @@ impl Scheduler {
     ///still has locking instructions, but they are reduced at the cost of "immediate" updates
     ///as its first being checked if the mask even changed in the first place
     ///with a steady stream of tasks everything should be resolved
+    ///TODO its broken dont use it
     pub fn any_task_weak_locking<F, T>(&mut self, exec: TaskWrapper<F>) -> Result<(), WorkerError<F>>
     where F: FIDCache + FnMut(),
           T: IdxCache,
@@ -178,9 +174,13 @@ impl Scheduler {
             return Err(WorkerError::Busy(exec, LockVariant::Weak));
         }
 
-        self.worker_state_copy[tid] &= !(1 << available_idx);
+
         if is_different{
+            IS_DIFFERENT.fetch_add(1, Acquire);
             WORKER_STATE[tid].get().fetch_and(!(1 << available_idx), Release);
+            self.worker_state_copy[tid] = WORKER_STATE[tid].get().load(Acquire);
+        }else {
+            self.worker_state_copy[tid] &= !(1 << available_idx);
         }
 
         unsafe {self.mail_task(exec, sub_scheduler, available_idx)}
@@ -277,8 +277,8 @@ impl Scheduler {
     }
 
     //partially ignores borrowing rules
-    ///you should generally just go through the create_task macro of function
-    pub unsafe fn unchecked_task_wrapper<'a, F: FnMut()>(task: F) -> TaskWrapper<F> {
+    ///you should generally just go through the create_task macro or function
+    pub unsafe fn create_task_unchecked<F: FnMut()>(task: F) -> TaskWrapper<F> {
         return transmute_copy(&task)
     }
 }
@@ -294,9 +294,8 @@ pub(crate) struct SubScheduler{
     //offset within the global "WORKER_STATE" mask
     offset: usize,
 
-    //its rarely used, the pointer indirection shouldn't matter
-    //TODO but also there is not really a point in having it be on the heap?
-    handles: Box<[Option<JoinHandle<()>>; MAX_WORKERS_PER_SCHED]>,
+
+    handles: [Option<JoinHandle<()>>; MAX_WORKERS_PER_SCHED],
 
     heartbeat_test: [Padded<AtomicBool>; MAX_WORKERS_PER_SCHED],
     //every worker has their own UNIQUE index into it and terminates once it's set to true
@@ -326,7 +325,7 @@ impl SubScheduler {
 
         //init the states for a given sub_scheduler
         WORKER_STATE[tid].get().store(mask, Release);
-        let handles: Box<[Option<JoinHandle<()>>; MAX_WORKERS_PER_SCHED]> = Box::new([const { None }; MAX_WORKERS_PER_SCHED]);
+        let handles: [Option<JoinHandle<()>>; MAX_WORKERS_PER_SCHED] = [const { None }; MAX_WORKERS_PER_SCHED];
         let heartbeats = [const { Padded(AtomicBool::new(false)) }; MAX_WORKERS_PER_SCHED];
         let terminate = Padded([const { AtomicBool::new(false) }; MAX_WORKERS_PER_SCHED]);
 
@@ -335,9 +334,7 @@ impl SubScheduler {
 
         unsafe {
             core::ptr::write_volatile(&raw mut (*incomplete_schedulers).workers, workers);
-            //println!("workers {}", (*incomplete_schedulers).workers);
             core::ptr::write_volatile(&raw mut (*incomplete_schedulers).offset, offset);
-            //println!("offset {}", (*incomplete_schedulers).offset);
             core::ptr::write_volatile(&raw mut (*incomplete_schedulers).worker_terminate, terminate);
             core::ptr::write_volatile(&raw mut (*incomplete_schedulers).handles, handles);
             core::ptr::write_volatile(&raw mut (*incomplete_schedulers).heartbeat_test, heartbeats);

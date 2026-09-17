@@ -1,8 +1,6 @@
-use core::{mem, ptr};
-use core::ptr::{null, null_mut};
+use core::ptr::null_mut;
 use core::sync::atomic::AtomicBool;
-use std::cell::OnceCell;
-use crate::scheduler::Padded;
+use core::ptr;
 
 #[repr(align(64))]
 #[repr(C)]
