@@ -5,7 +5,6 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 const MAX_ID_SLOTS: usize = 64;
 
-const ADDRESS_SPACE_BITS: usize = 48;
 
 //non-static type_id replacement
 //must be inline never so llvm doesn't break the recursion
@@ -45,6 +44,7 @@ fn private_search_style<T: IdxCache>(_ident: &T, table: &[usize; MAX_ID_SLOTS], 
 #[inline]
 fn bucket(tid: u64) -> usize {
     let x = tid >> 4;
+    //I hope this splits well
     ((x.wrapping_mul(0x9E3779B97F4A7C15)) >> 59) as usize & 31
 }
 pub trait IdxCache{
@@ -97,11 +97,7 @@ pub trait FIDCache{
 
         let tid = private_tid(&self);
 
-        //Max is ADDRESS_SPACE_BITS / 2 or 24 with 48 as address space;
-        let addr = tid & ((1u64 << ADDRESS_SPACE_BITS) - 1) as usize;
-        let mask = addr & 0x5555555555555555;
-        let extra = (tid & 4095) % 7;
-        let bucket: usize = ((mask.count_ones() + extra as u32) & 31) as usize;
+        let bucket = bucket(tid as u64);
 
         //the reference dies before the is indexed so it's fine
         let item = private_search_style(&self, unsafe {&*&raw const ID_TABLE[bucket]}, tid);

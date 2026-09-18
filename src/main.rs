@@ -60,18 +60,20 @@ fn main() {
     let mut counter = 0;
 
 
+
      unsafe {
          for _ in 0..5_000_000 {
              let create1 = create_task!(test_task3(atomic_counter));
              let create2 = create_task!(test_task3(atomic_counter));
-             let x1 = sh.any_task_lockless::<_, Post>(create1);
+             let x1 = sh.any_task_locking::<_, Post>(create1);
              sh.block_until_arrival::<_, Post>(x1);
-             let x2 = sh.any_task_lockless::<_, Fetch>(create2);
+             let x2 = sh.any_task_locking::<_, Fetch>(create2);
              sh.block_until_arrival::<_, Fetch>(x2);
              counter += 1;
          }
      }
 
+    println!("elapsed {:?}", now.elapsed());
     println!("counter {:?}", counter);
     println!("atomic counter {:?}", atomic_counter.load(Acquire));
     println!("is different : {}", IS_DIFFERENT.load(Acquire));

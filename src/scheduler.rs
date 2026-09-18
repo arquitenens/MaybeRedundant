@@ -283,10 +283,7 @@ impl Scheduler {
     }
 }
 
-#[repr(align(64))]
-//dont reorder evil compiler grrr
 #[repr(C)]
-//128bytes
 #[derive(Debug)]
 pub(crate) struct SubScheduler{
     //amount of workers
@@ -333,11 +330,11 @@ impl SubScheduler {
         let incomplete_schedulers: *mut SubScheduler = unsafe {(&raw mut SUB_SCHEDULERS[tid]).cast::<SubScheduler>()};
 
         unsafe {
-            core::ptr::write_volatile(&raw mut (*incomplete_schedulers).workers, workers);
-            core::ptr::write_volatile(&raw mut (*incomplete_schedulers).offset, offset);
-            core::ptr::write_volatile(&raw mut (*incomplete_schedulers).worker_terminate, terminate);
-            core::ptr::write_volatile(&raw mut (*incomplete_schedulers).handles, handles);
-            core::ptr::write_volatile(&raw mut (*incomplete_schedulers).heartbeat_test, heartbeats);
+            core::ptr::write(&raw mut (*incomplete_schedulers).workers, workers);
+            core::ptr::write(&raw mut (*incomplete_schedulers).offset, offset);
+            core::ptr::write(&raw mut (*incomplete_schedulers).worker_terminate, terminate);
+            core::ptr::write(&raw mut (*incomplete_schedulers).handles, handles);
+            core::ptr::write(&raw mut (*incomplete_schedulers).heartbeat_test, heartbeats);
 
             for w in 0..workers {
                 let global_slot = offset + w;
