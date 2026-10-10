@@ -5,6 +5,7 @@ use core::hint::black_box;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering::{Acquire, Release};
 use core::ops::Deref;
+use std::any::TypeId;
 use std::thread::{available_parallelism, sleep};
 use std::time::{Duration, Instant};
 use crate::idx_cache::IdxCache;
@@ -26,7 +27,6 @@ fn test_task1(x: &mut u64) -> impl FnMut() {
         *x += 1;
     }
 }
-
 fn test_task3(x: &AtomicU64) -> impl FnMut() {
     move || {
         x.fetch_add(1, Release);
@@ -77,7 +77,7 @@ fn main() {
     println!("counter {:?}", counter);
     println!("atomic counter {:?}", atomic_counter.load(Acquire));
     println!("is different : {}", IS_DIFFERENT.load(Acquire));
-
+    
 
     black_box(sh);
 }

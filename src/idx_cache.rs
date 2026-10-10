@@ -2,13 +2,14 @@ use core::arch::asm;
 use core::hint::black_box;
 use core::mem::{transmute, MaybeUninit};
 use core::sync::atomic::{AtomicUsize, Ordering};
+use std::arch::x86_64::{__m512i, _mm512_cmpeq_epi64_mask, _mm512_set1_epi64};
 
-const MAX_ID_SLOTS: usize = 64;
+const MAX_BUCKETS: usize = 64;
 
 
 //non-static type_id replacement
 //must be inline never so llvm doesn't break the recursion
-//This probably only works on llvm or as long as rustc is using it so pfffttt 
+//This probably only works on llvm or as long as rustc is using it so pfffttt
 #[inline(never)]
 fn private_tid<T: IdxCache>(own: &T) -> usize {
     let _unique_t: fn(&T) -> &T = |x|{
@@ -30,28 +31,39 @@ fn private_tid<T: IdxCache>(own: &T) -> usize {
     _unique_t as usize
 }
 
-fn private_search_style<T: IdxCache>(_ident: &T, table: &[usize; MAX_ID_SLOTS], tid: usize) -> Result<usize, usize> {
+fn private_search_style<T: IdxCache>(_ident: &T, table: &[usize; 8], tid: usize) -> Result<usize, usize> {
     black_box(_ident);
-    //TODO maybe vectorize? though the compiler will surely do it for me
-    for (i, v) in table.iter().enumerate(){
-        if *v == tid {
-            return Result::Ok(i);
-        }
+    let data: __m512i = unsafe { transmute(*table) };
+    let needle: __m512i = unsafe {_mm512_set1_epi64(tid as i64)};
+    let matches: usize = unsafe {_mm512_cmpeq_epi64_mask(data, needle) as usize};
+    //cant use bsf because it might be zero since a value might have not been registered yet
+    let idx: usize;
+    unsafe {
+        asm!(
+        "xor {dst}, {dst}",
+        "tzcnt {dst}, {src}",
+        dst = out(reg) idx,
+        src = in(reg) matches,
+        )
     }
-    return Result::Err(0);
+    if matches == 0 {
+        return Result::Err(0);
+    }
+    Ok(idx)
 }
 
 #[inline]
 fn bucket(tid: u64) -> usize {
     let x = tid >> 4;
     //I hope this splits well
-    ((x.wrapping_mul(0x9E3779B97F4A7C15)) >> 59) as usize & 31
+    ((x.wrapping_mul(0x9E3779B97F4A7C15)) >> 64 - MAX_BUCKETS.ilog2()) as usize
 }
 pub trait IdxCache{
     ///The Tid might not appear in the order you registered them but is always the same and increments sequentially
     fn get_tid(&self) -> usize {
         static REG_ITEMS: AtomicUsize = AtomicUsize::new(0);
-        static mut ID_TABLE: [[usize; MAX_ID_SLOTS]; 32] = [[usize::MAX; MAX_ID_SLOTS]; 32];
+        static mut ID_TABLE: [[usize; 8]; MAX_BUCKETS] = [[usize::MAX; 8]; MAX_BUCKETS];
+        static mut BOOK_KEEP: [[usize; 8]; MAX_BUCKETS] = [[usize::MAX; 8]; MAX_BUCKETS];
 
         let tid = private_tid(&self);
 
@@ -62,17 +74,21 @@ pub trait IdxCache{
 
         //No dup
         if item.is_ok(){
-            return item.unwrap();
+            return unsafe {BOOK_KEEP[bucket][item.unwrap()]};
         };
 
         //needs to happen after the duplicate check otherwise you're wasting slots
         let idx = REG_ITEMS.fetch_add(1, Ordering::Acquire);
 
-        assert!(idx < MAX_ID_SLOTS,
-                "You only have more than {} registered items, you can change it via the flags", MAX_ID_SLOTS);
+        assert!(idx < 8 * MAX_BUCKETS,
+                "You have more than {} registered items, you can change it via the MAX_BUCKETS", 8 * MAX_BUCKETS);
+
+
+        let not_pow: usize = (idx & 8) ^ 1;
 
         unsafe {
-            (&raw mut ID_TABLE[bucket][idx]).write_volatile(tid);
+            (&raw mut ID_TABLE[bucket][(idx + not_pow) % 8]).write_volatile(tid);
+            (&raw mut BOOK_KEEP[bucket][(idx + not_pow) % 8]).write_volatile(idx);
         };
         black_box(&self);
         return idx;
@@ -93,7 +109,8 @@ pub trait FIDCache{
     ///The Tid might not appear in the order you registered them but is always the same and increments sequentially
     fn get_fid(&self) -> usize {
         static REG_ITEMS: AtomicUsize = AtomicUsize::new(0);
-        static mut ID_TABLE: [[usize; MAX_ID_SLOTS]; 32] = [[usize::MAX; MAX_ID_SLOTS]; 32];
+        static mut ID_TABLE: [[usize; 8]; MAX_BUCKETS] = [[usize::MAX; 8]; MAX_BUCKETS];
+        static mut BOOK_KEEP: [[usize; 8]; MAX_BUCKETS] = [[usize::MAX; 8]; MAX_BUCKETS];
 
         let tid = private_tid(&self);
 
@@ -104,17 +121,21 @@ pub trait FIDCache{
 
         //No dup
         if item.is_ok(){
-            return item.unwrap();
+            return unsafe {BOOK_KEEP[bucket][item.unwrap()]};
         };
 
         //needs to happen after the duplicate check otherwise you're wasting slots
         let idx = REG_ITEMS.fetch_add(1, Ordering::Acquire);
 
-        assert!(idx < MAX_ID_SLOTS,
-                "You only have more than {} registered items, you can change it via the flags", MAX_ID_SLOTS);
+        assert!(idx < 8 * MAX_BUCKETS,
+                "You have more than {} registered items, you can change it via the MAX_BUCKETS", 8 * MAX_BUCKETS);
+
+
+        let not_pow: usize = (idx & 8) ^ 1;
 
         unsafe {
-            (&raw mut ID_TABLE[bucket][idx]).write_volatile(tid);
+            (&raw mut ID_TABLE[bucket][(idx + not_pow) % 8]).write_volatile(tid);
+            (&raw mut BOOK_KEEP[bucket][(idx + not_pow) % 8]).write_volatile(idx);
         };
         black_box(&self);
         return idx;
@@ -125,7 +146,7 @@ pub trait FIDCache{
     #[inline]
     unsafe fn empty<'a, T>() -> &'a Self where Self: Sized {
         unsafe {
-            transmute(&MaybeUninit::<T>::zeroed())
+            transmute(&MaybeUninit::<T>::uninit())
         }
     }
 }
