@@ -11,8 +11,10 @@ use core::sync::atomic::Ordering::Acquire;
 use core::sync::atomic::Ordering::Release;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
 use core::ptr;
+use core::any::TypeId;
+use std::arch::x86_64::{__m512i, _mm512_cmpeq_epi64_mask, _mm512_loadu_si512, _mm512_set1_epi64};
+use std::intrinsics::transmute;
 use std::thread::JoinHandle;
-
 
 
 #[macro_export]
@@ -24,7 +26,7 @@ macro_rules! create_task {
 
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct TaskWrapper<F: FnMut()>(F);
+pub(crate) struct TaskWrapper<F: FnMut()>(F);
 impl<F: FnMut()> TaskWrapper<F> {
     fn into_inner(self) -> F {
         self.0
@@ -38,7 +40,6 @@ pub static mut TASK_SLOTS: [u8; 4096] = [0; 4096];
 
 pub static mut OCCUPIED_BYTES: usize = 0;
 
-static STALE_ATOMIC: [Padded<AtomicU64>; MAX_SUB_SCHEDULERS] = [const {Padded(AtomicU64::new(0))}; MAX_SUB_SCHEDULERS];
 
 //due to how FID works duplicates are impossible meaning 128 unique Tasks can be stored in a program
 pub static mut TASK_POSITION_LOOKUP: [OnceCell<usize>; 128] = [const {OnceCell::new()}; 128];
@@ -50,7 +51,7 @@ pub(crate) static WORKER_STATE: [Padded<AtomicU64>; MAX_SUB_SCHEDULERS] = [const
 #[repr(align(64))]
 #[derive(Clone, Copy, Debug)]
 ///64 byte aligned T
-pub(crate) struct Padded<T>(pub(crate) T);
+pub struct Padded<T>(pub(crate) T);
 impl<T> Padded<T> {
     #[inline(always)]
     fn get_mut(&mut self) -> &mut T {
@@ -76,13 +77,13 @@ pub(crate) enum WorkerError<F: FnMut()>{
     Misc,
 }
 
-pub(crate) struct Scheduler {
+pub struct Scheduler {
     pub(crate) generic_schedulers: [Padded<*mut SubScheduler>; MAX_SUB_SCHEDULERS],
     pub(crate) worker_state_copy: [u64; MAX_WORKERS_PER_SCHED],
     iterations: u64,
 }
 impl Scheduler {
-    pub(crate) fn new(config: Config) -> SchedulerBuilder {
+    pub fn new(config: Config) -> SchedulerBuilder {
         SchedulerBuilder{
             config,
             incomplete: Scheduler {
@@ -256,7 +257,7 @@ impl Scheduler {
     }
 
     ///block until a worker received the task and NOT until the task has finished executing
-    pub fn block_until_arrival<F: FnMut(), For: IdxCache>(&mut self, busy: Result<(), WorkerError<F>>){
+    pub fn block_until_arrival<F: FnMut() + 'static, For: IdxCache>(&mut self, busy: Result<(), WorkerError<F>>){
         match busy {
             Ok(()) => {},
             Err(WorkerError::Busy(task, variant)) => {

@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use core::sync::atomic::Ordering::Release;
 
 
-pub(crate) struct Worker{
+pub struct Worker{
     pub(crate) idx: usize,
 
     pub(crate) tid: usize,
