@@ -2,6 +2,9 @@ use core::ptr::null_mut;
 use core::sync::atomic::AtomicBool;
 use core::ptr;
 
+pub struct SendPtr<T>(pub(crate) *const T);
+unsafe impl<T> Send for SendPtr<T> {}
+
 #[repr(align(64))]
 #[repr(C)]
 #[derive(Debug)]

@@ -4,9 +4,7 @@ use core::mem::{transmute, MaybeUninit};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::any::{Any, TypeId};
 use std::arch::x86_64::{__m512i, _mm512_cmpeq_epi64_mask, _mm512_loadu_si512, _mm512_set1_epi64};
-
-
-
+use crate::scheduler::Scheduler;
 //non-static type_id replacement
 //must be inline never so llvm doesn't break the recursion
 //This probably only works on llvm or as long as rustc is using it so pfffttt
@@ -40,7 +38,7 @@ fn bucket(tid: u64) -> usize {
 }
 
 
-pub trait IdxCache{
+pub(crate) trait IdxCache{
     ///The Tid might not appear in the order you registered them but is always the same and increments sequentially
     ///You can register 63 unique types, why not 64 you might ask? well it just is that way
     fn get_tid(&self) -> usize {
@@ -50,11 +48,13 @@ pub trait IdxCache{
         unsafe {
             //Not yet seen
             if CONTAINED[cnt] == usize::MAX {
-                assert!(REGISTRATIONS.fetch_add(1, Ordering::Relaxed) <= 62);
+                let old = REGISTRATIONS.fetch_add(1, Ordering::Relaxed);
+                assert!(old <= 62);
+                CONTAINED[cnt] = old;
             }
-            CONTAINED[cnt] = cnt;
+
         }
-        return cnt
+        unsafe {CONTAINED[cnt]}
     }
 
 
@@ -69,7 +69,7 @@ pub trait IdxCache{
 }
 
 ///FID is just a different static counter so it doesnt clash with IdxCache for all other types
-pub trait FIDCache{
+pub(crate) trait FIDCache{
     ///The Tid might not appear in the order you registered them but is always the same and increments sequentially
     fn get_fid(&self) -> usize {
         static mut CONTAINED: [usize; 64] = [usize::MAX; 64];
@@ -78,12 +78,39 @@ pub trait FIDCache{
         unsafe {
             //Not yet seen
             if CONTAINED[cnt] == usize::MAX {
-                assert!(REGISTRATIONS.fetch_add(1, Ordering::Relaxed) <= 62);
+                let old = REGISTRATIONS.fetch_add(1, Ordering::Relaxed);
+                assert!(old <= 62);
+                CONTAINED[cnt] = old;
             }
-            CONTAINED[cnt] = cnt;
-        }
-        return cnt
 
+        }
+        unsafe {CONTAINED[cnt]}
+    }
+    //I don't need a valid instance of T
+    //but still pretty unsafe
+    #[inline]
+    unsafe fn empty<'a, T>() -> &'a Self where Self: Sized {
+        unsafe {
+            transmute(&MaybeUninit::<T>::uninit())
+        }
+    }
+}
+
+pub(crate) trait SchedCache{
+    fn get_sid(&self) -> usize {
+        static mut CONTAINED: [usize; 64] = [usize::MAX; 64];
+        static REGISTRATIONS: AtomicUsize = AtomicUsize::new(0);
+        let cnt = bucket(private_tid(&self) as u64);
+        unsafe {
+            //Not yet seen
+            if CONTAINED[cnt] == usize::MAX {
+                let old = REGISTRATIONS.fetch_add(1, Ordering::Relaxed);
+                assert!(old <= 62);
+                CONTAINED[cnt] = old;
+            }
+
+        }
+        unsafe {CONTAINED[cnt]}
     }
     //I don't need a valid instance of T
     //but still pretty unsafe
@@ -96,3 +123,4 @@ pub trait FIDCache{
 }
 impl<T> IdxCache for T{}
 impl<T> FIDCache for T{}
+impl<const N: usize> SchedCache for Scheduler<N>{}

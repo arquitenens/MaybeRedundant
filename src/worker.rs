@@ -1,10 +1,12 @@
-use crate::scheduler::WORKER_STATE;
-use crate::task::Task;
+use crate::scheduler::{Scheduler, SubScheduler, WORKER_STATE};
+use crate::task::{SendPtr, Task};
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use core::sync::atomic::Ordering::Release;
-
+use std::ops::Sub;
 
 pub struct Worker{
+    pub(crate) parent_idx: usize,
+
     pub(crate) idx: usize,
 
     pub(crate) tid: usize,
@@ -26,8 +28,9 @@ static EMPTY_TASK: Task = Task::empty();
 
 
 impl Worker {
-    pub(crate) fn new(idx: usize, slot: usize, has_heartbeat: &'static AtomicBool, signal: &'static AtomicBool, current_task: AtomicPtr<Task>) -> Self {
+    pub(crate) fn new(parent_idx: usize, idx: usize, slot: usize, has_heartbeat: &'static AtomicBool, signal: &'static AtomicBool, current_task: AtomicPtr<Task>) -> Self {
         Self{
+            parent_idx,
             idx,
             tid: slot,
             has_heartbeat,
@@ -66,7 +69,7 @@ impl Worker {
 
                 (*current_task).execute();
                 let _ = current_task.replace(Task::empty());
-                WORKER_STATE[self.tid].get().fetch_or(1 << self.idx, Release);
+                WORKER_STATE[self.parent_idx][self.tid].get().fetch_or(1 << self.idx, Release);
 
             }
         }
