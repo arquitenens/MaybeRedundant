@@ -374,11 +374,13 @@ impl Drop for SubScheduler {
 struct DropRange;
 impl Drop for Scheduler {
     fn drop(&mut self) {
-        //in order to only drop registered scheduler and save a bit of performance
-        //you can just register a new item which will then have the biggest index, thus tell you how many items are registered
-        let x = DropRange.get_tid();
-        for sh in self.generic_schedulers[0..DropRange.get_tid()].into_iter(){
-            unsafe {sh.0.drop_in_place()};
+        //You cant iterate only the registered items anymore due to changes, you have to iter all schedulers
+        for sh in self.generic_schedulers[0..].into_iter(){
+            unsafe {
+                if !sh.0.is_null(){
+                    sh.0.drop_in_place()
+                }
+            };
         }
     }
 }
