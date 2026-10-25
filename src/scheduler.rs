@@ -1,6 +1,6 @@
 use crate::builder::SchedulerBuilder;
 use crate::config::{Config, MAX_SUB_SCHEDULERS, MAX_WORKERS_PER_SCHED};
-use crate::idx_cache::{FIDCache, IdxCache, SchedCache, NoMove};
+use crate::idx_cache::{FIDCache, IdxCache, SchedCache};
 use crate::task::{Task};
 use crate::worker::Worker;
 use core::arch::asm;

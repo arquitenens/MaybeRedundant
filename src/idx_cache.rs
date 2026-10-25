@@ -125,12 +125,4 @@ pub(crate) trait SchedCache{
 impl<T> IdxCache for T{}
 impl<T> FIDCache for T{}
 
-pub trait NoMove{
-    fn no_move(self) where Self: Sized{
-        black_box(self);
-    }
-}
-
-impl<T> NoMove for T {}
-
 impl<const N: usize> SchedCache for Scheduler<N>{}
