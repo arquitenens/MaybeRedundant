@@ -1,7 +1,7 @@
 use crate::builder::SchedulerBuilder;
 use crate::config::{Config, MAX_SUB_SCHEDULERS, MAX_WORKERS_PER_SCHED};
-use crate::idx_cache::{FIDCache, IdxCache, SchedCache};
-use crate::task::{SendPtr, Task};
+use crate::idx_cache::{FIDCache, IdxCache, SchedCache, NoMove};
+use crate::task::{Task};
 use crate::worker::Worker;
 use core::arch::asm;
 use core::cell::OnceCell;
@@ -11,6 +11,7 @@ use core::ptr;
 use core::sync::atomic::Ordering::Acquire;
 use core::sync::atomic::Ordering::Release;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::mem::transmute;
 use std::sync::atomic::AtomicUsize;
 use std::thread::JoinHandle;
 
@@ -22,10 +23,10 @@ macro_rules! create_task {
 }
 #[derive(Debug)]
 #[repr(transparent)]
-pub(crate) struct TaskWrapper<const N: usize, F: FnMut()>(F);
-impl<const N: usize, F: FnMut()> TaskWrapper<N, F> {
+pub struct TaskWrapper<const N: usize, F: FnOnce()>((F, bool));
+impl<const N: usize, F: FnOnce()> TaskWrapper<N, F> {
     fn into_inner(self) -> F {
-        self.0
+        self.0.0
     }
 }
 
@@ -36,7 +37,6 @@ pub static mut TASK_SLOTS: [u8; 4096] = [0; 4096];
 
 pub static mut OCCUPIED_BYTES: usize = 0;
 
-static SCHEDULER_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static mut WORKER_STATE: [[Padded<AtomicU64>; 64]; 8]
 = [const {[ const { Padded(AtomicU64::new(0)) }; MAX_WORKERS_PER_SCHED] }; 8];
 
@@ -68,7 +68,7 @@ enum LockVariant{
 pub static IS_DIFFERENT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
-pub(crate) enum WorkerError<const N: usize, F: FnMut()>{
+pub(crate) enum WorkerError<const N: usize, F: FnOnce()>{
     Busy(TaskWrapper<N, F>, LockVariant),
     Misc,
 }
@@ -79,8 +79,6 @@ pub struct Scheduler<const N: usize> {
 }
 impl<const N: usize> Scheduler<N> {
     pub fn new(config: Config) -> SchedulerBuilder {
-        SCHEDULER_COUNT.fetch_add(1, Acquire);
-
         unsafe {<Scheduler<N> as SchedCache>::empty::<Self>().get_sid();}
 
         SchedulerBuilder{
@@ -97,15 +95,11 @@ impl<const N: usize> Scheduler<N> {
     ///it's better for batches of size, well, N % default_worker
     ///has the lowest update guarantee and singular calls might not even be executed at all
     pub fn any_task_lockless<F, T>(&mut self, exec: TaskWrapper<N, F>) -> Result<(), WorkerError<N, F>>
-    where F: FIDCache + FnMut(),
+    where F: FIDCache + FnOnce(),
           T: IdxCache,
     {
         let tid = unsafe {T::empty::<T>().get_tid()};
 
-        if tid >= MAX_SUB_SCHEDULERS {
-            core::hint::cold_path();
-            panic!("You tried to input types that have not been registered yet into either the register or this function")
-        }
         let sub_scheduler = unsafe { &*self.generic_schedulers[tid].0};
 
         let available_idx: usize;
@@ -141,15 +135,10 @@ impl<const N: usize> Scheduler<N> {
 
     ///No artificial buffering, immediate results but also the slowest and most prone to contention
     pub fn any_task_locking<F, T>(&mut self, exec: TaskWrapper<N, F>) -> Result<(), WorkerError<N, F>>
-    where F: FIDCache + FnMut(),
+    where F: FIDCache + FnOnce(),
           T: IdxCache,
     {
         let tid = unsafe {T::empty::<T>().get_tid()};
-
-        if tid >= MAX_SUB_SCHEDULERS {
-            core::hint::cold_path();
-            panic!("You tried to input types that have not been registered yet into either the register or this function")
-        }
         let sub_scheduler = unsafe { &*self.generic_schedulers[tid].0};
 
         let available_idx: usize;
@@ -174,7 +163,8 @@ impl<const N: usize> Scheduler<N> {
         return Ok(())
     }
 
-    unsafe fn mail_task<F: FnMut()>(&mut self, exec: TaskWrapper<N, F>, sub_scheduler: &SubScheduler, available_idx: usize){
+    unsafe fn mail_task<F: FnOnce()>(&mut self, mut exec: TaskWrapper<N, F>, sub_scheduler: &SubScheduler, available_idx: usize){
+        let replace = exec.0.1;
         let fid = exec.get_fid();
         //Well get or init the size of a function if it hasn't been seen before
         let is_init = unsafe {TASK_POSITION_LOOKUP[fid].get().is_some()};
@@ -183,18 +173,20 @@ impl<const N: usize> Scheduler<N> {
             *&raw mut OCCUPIED_BYTES
         })};
 
-
-        if !is_init{
+        if replace{
             unsafe {
                 if *&raw mut OCCUPIED_BYTES + size_of::<F>() <= 4096{
-                    let dest = (&raw mut TASK_SLOTS[OCCUPIED_BYTES]) as *mut F;
-                    dest.write(exec.into_inner());
-                    OCCUPIED_BYTES += size_of::<F>();
+                    let dest = (&raw mut TASK_SLOTS[task_offset]) as *mut F;
+                    dest.write_unaligned(exec.into_inner());
+                    OCCUPIED_BYTES += size_of::<F>() * (!is_init) as usize;
                 }else {
                     panic!("You dont have enough space to store more unique tasks, fid {fid}")
                 }
             }
         }
+
+        //println!("task_offset: {:?}", task_offset);
+        //println!("occupied: {:?}", *&raw const OCCUPIED_BYTES);
 
         let offset = sub_scheduler.offset;
         let slot: *mut Task = unsafe { &raw mut MAIL_BOX[offset + available_idx]};
@@ -207,7 +199,7 @@ impl<const N: usize> Scheduler<N> {
     }
 
     ///block until a worker received the task and NOT until the task has finished executing
-    pub fn block_until_arrival<F: FnMut() + 'static, For: IdxCache>(&mut self, busy: Result<(), WorkerError<N, F>>){
+    pub fn block_until_arrival<F: FnOnce(), For: IdxCache>(&mut self, busy: Result<(), WorkerError<N, F>>){
         match busy {
             Ok(()) => {},
             Err(WorkerError::Busy(task, variant)) => {
@@ -223,14 +215,14 @@ impl<const N: usize> Scheduler<N> {
     }
     #[inline]
     ///this just exists for if you want to be explicit you should generally use the macro
-    pub fn create_task<T: 'static + FnOnce() -> F, F>(task: T) -> TaskWrapper<N, F> where F: FnMut() {
-        TaskWrapper(task())
+    pub fn create_task<T: FnOnce() -> F, F>(task: T) -> TaskWrapper<N, F> where F: FnOnce() {
+        unsafe {TaskWrapper((task(), true))}
     }
 
     //partially ignores borrowing rules
     ///you should generally just go through the create_task macro or function
-    pub unsafe fn create_task_unchecked<F: FnMut()>(task: F) -> TaskWrapper<N, F> {
-        return transmute_copy(&task)
+    pub unsafe fn create_task_unchecked<F: FnMut()>(task: F, replace: bool) -> TaskWrapper<N, F> {
+        return transmute_copy(&(task, replace))
     }
 }
 
@@ -315,7 +307,6 @@ impl Drop for SubScheduler {
 
 
 //Shouldn't be accessible and stay private
-struct DropRange;
 impl<const N: usize> Drop for Scheduler<N> {
     fn drop(&mut self) {
         //You cant iterate only the registered items anymore due to changes, you have to iter all schedulers

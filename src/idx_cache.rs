@@ -4,6 +4,7 @@ use core::mem::{transmute, MaybeUninit};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::any::{Any, TypeId};
 use std::arch::x86_64::{__m512i, _mm512_cmpeq_epi64_mask, _mm512_loadu_si512, _mm512_set1_epi64};
+use std::ptr::drop_in_place;
 use crate::scheduler::Scheduler;
 //non-static type_id replacement
 //must be inline never so llvm doesn't break the recursion
@@ -123,4 +124,13 @@ pub(crate) trait SchedCache{
 }
 impl<T> IdxCache for T{}
 impl<T> FIDCache for T{}
+
+pub trait NoMove{
+    fn no_move(self) where Self: Sized{
+        black_box(self);
+    }
+}
+
+impl<T> NoMove for T {}
+
 impl<const N: usize> SchedCache for Scheduler<N>{}

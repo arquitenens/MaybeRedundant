@@ -2,8 +2,6 @@ use core::ptr::null_mut;
 use core::sync::atomic::AtomicBool;
 use core::ptr;
 
-pub struct SendPtr<T>(pub(crate) *const T);
-unsafe impl<T> Send for SendPtr<T> {}
 
 #[repr(align(64))]
 #[repr(C)]
@@ -23,10 +21,10 @@ trait Taskable{
     unsafe fn drop(this: *const ());
 }
 
-impl<F: FnMut()> Taskable for F {
+impl<F: FnOnce()> Taskable for F {
     #[inline(always)]
     unsafe fn execute(this: *const ()) {
-        unsafe { (*(this as *mut F))() }
+        unsafe { ((this as *mut F).read_unaligned())() }
     }
     unsafe fn drop(this: *const ()) {
         //TODO PFft dont know if this is safe

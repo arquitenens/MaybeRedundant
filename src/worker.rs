@@ -1,7 +1,8 @@
 use crate::scheduler::{Scheduler, SubScheduler, WORKER_STATE};
-use crate::task::{SendPtr, Task};
+use crate::task::{Task};
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use core::sync::atomic::Ordering::Release;
+use std::hint::spin_loop;
 use std::ops::Sub;
 
 pub struct Worker{
@@ -46,7 +47,7 @@ impl Worker {
                 // if !self.has_heartbeat.load(Ordering::Relaxed){
                 //     //self.has_heartbeat.store(true, Ordering::Relaxed);
                 // }
-
+                spin_loop();
 
                 if self.signal.load(Ordering::Acquire) {
                     //dbg!("Dropping Worker {}", self.idx);
