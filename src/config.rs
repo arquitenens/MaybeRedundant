@@ -5,13 +5,13 @@ pub const MAX_SUB_SCHEDULERS: usize = 64;
 
 
 //TODO custom thread amounts
-pub(crate) enum ThreadAmount{
+pub enum ThreadAmount{
     Default,
     Overwrite(usize),
 }
 
 pub struct Config{
-    pub(crate) threads_per_sub_sched: usize,
+    pub threads_per_sub_sched: usize,
 }
 impl Config{
     ///Be careful, if you set the workers to 16, but you only have 16 threads then the 17th thread

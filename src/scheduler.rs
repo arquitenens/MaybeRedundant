@@ -1,7 +1,9 @@
+#![allow(private_bounds)]
+#![allow(private_interfaces)]
 use crate::builder::SchedulerBuilder;
 use crate::config::{Config, MAX_SUB_SCHEDULERS, MAX_WORKERS_PER_SCHED};
 use crate::idx_cache::{FIDCache, IdxCache, SchedCache};
-use crate::task::{Task};
+use crate::task::Task;
 use crate::worker::Worker;
 use core::arch::asm;
 use core::cell::OnceCell;
@@ -11,9 +13,13 @@ use core::ptr;
 use core::sync::atomic::Ordering::Acquire;
 use core::sync::atomic::Ordering::Release;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
-use std::mem::transmute;
-use std::sync::atomic::AtomicUsize;
+use std::hint::spin_loop;
+use std::marker::PhantomData;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+
 
 #[macro_export]
 macro_rules! create_task {
@@ -21,10 +27,36 @@ macro_rules! create_task {
         Scheduler::create_task(|| $task($($arg),*))
     };
 }
+
+#[macro_export]
+macro_rules! create_task_with_callback {
+    ($task:ident($($arg:expr),*), $callback:ident($($callback_arg:expr),*)) => {
+        Scheduler::create_task_with_callback(|| {
+            let mut exec = $task($($arg),*);
+            exec();
+            $callback($($callback_arg),*)
+        })
+    };
+}
+
+//TODO Really just use the custom callback? idk
+//i dont see the gain in haveing some specialized thing other than maybe some extra performance
+#[repr(u8)]
+pub enum Callback{
+    //the reason there is no condvar is that the scheduler is single threaded... so there not really a reason to halt it unless you want to
+    //fuck yourself over?
+    //like idk tell me a good reason for it
+    NotifyWhenDone(/*where to notify*/&'static AtomicBool) = 1 << 0,
+    CompletionCounter(&'static AtomicU64) = 1 << 2,
+
+}
+
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct TaskWrapper<const N: usize, F: FnOnce()>((F, bool));
-impl<const N: usize, F: FnOnce()> TaskWrapper<N, F> {
+#[allow(private_bounds)]
+pub struct TaskWrapper<Callee: IdxCache, const N: usize, F: FnOnce()>((F, bool, PhantomData<Callee>));
+#[allow(private_bounds)]
+impl<Callee: IdxCache, const N: usize, F: FnOnce()> TaskWrapper<Callee,N, F> {
     fn into_inner(self) -> F {
         self.0.0
     }
@@ -59,17 +91,15 @@ impl<T> Padded<T> {
     }
 }
 #[derive(Debug)]
-enum LockVariant{
+pub(crate) enum LockVariant{
     Weak,
     Strong,
     None
 }
 
-pub static IS_DIFFERENT: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug)]
-pub(crate) enum WorkerError<const N: usize, F: FnOnce()>{
-    Busy(TaskWrapper<N, F>, LockVariant),
+pub(crate) enum WorkerError<Callee: IdxCache, const N: usize, F: FnOnce()>{
+    Busy(TaskWrapper<Callee, N, F>, LockVariant),
     Misc,
 }
 
@@ -91,10 +121,15 @@ impl<const N: usize> Scheduler<N> {
             total_workers: 0,
         }
     }
+
+    pub fn get_sub_scheduler<T: IdxCache>(&self) -> *mut SubScheduler {
+        return self.generic_schedulers[unsafe {T::empty::<T>().get_tid()}].0
+    }
     ///it might happen that the last N % default_workers tasks are not delivered with the lock_less approach
     ///it's better for batches of size, well, N % default_worker
     ///has the lowest update guarantee and singular calls might not even be executed at all
-    pub fn any_task_lockless<F, T>(&mut self, exec: TaskWrapper<N, F>) -> Result<(), WorkerError<N, F>>
+
+    pub fn any_task_lockless<F, T>(&mut self, exec: TaskWrapper<T, N, F>) -> Result<(), WorkerError<T, N, F>>
     where F: FIDCache + FnOnce(),
           T: IdxCache,
     {
@@ -134,7 +169,7 @@ impl<const N: usize> Scheduler<N> {
 
 
     ///No artificial buffering, immediate results but also the slowest and most prone to contention
-    pub fn any_task_locking<F, T>(&mut self, exec: TaskWrapper<N, F>) -> Result<(), WorkerError<N, F>>
+    pub fn any_task_locking<F, T>(&mut self, exec: TaskWrapper<T, N, F>) -> Result<(), WorkerError<T, N, F>>
     where F: FIDCache + FnOnce(),
           T: IdxCache,
     {
@@ -160,10 +195,11 @@ impl<const N: usize> Scheduler<N> {
 
         unsafe {self.mail_task(exec, sub_scheduler, available_idx)}
 
+
         return Ok(())
     }
 
-    unsafe fn mail_task<F: FnOnce()>(&mut self, mut exec: TaskWrapper<N, F>, sub_scheduler: &SubScheduler, available_idx: usize){
+    unsafe fn mail_task<T: IdxCache, F: FnOnce()>(&mut self, exec: TaskWrapper<T, N, F>, sub_scheduler: &SubScheduler, available_idx: usize){
         let replace = exec.0.1;
         let fid = exec.get_fid();
         //Well get or init the size of a function if it hasn't been seen before
@@ -172,6 +208,7 @@ impl<const N: usize> Scheduler<N> {
         let task_offset = *unsafe {TASK_POSITION_LOOKUP[fid].get_or_init(|| {
             *&raw mut OCCUPIED_BYTES
         })};
+
 
         if replace{
             unsafe {
@@ -195,16 +232,24 @@ impl<const N: usize> Scheduler<N> {
             (&raw mut TASK_SLOTS[task_offset]) as *mut F
         };
 
+
         unsafe {slot.write_volatile(Task::new(raw))};
+
     }
 
     ///block until a worker received the task and NOT until the task has finished executing
-    pub fn block_until_arrival<F: FnOnce(), For: IdxCache>(&mut self, busy: Result<(), WorkerError<N, F>>){
+    pub fn block_until_arrival<F: FnOnce(), For: IdxCache>(&mut self, busy: Result<(), WorkerError<For, N, F>>){
+        //TODO instead of trying to send i could just check the bitmask, if it didnt change then there is no point in trying
         match busy {
             Ok(()) => {},
             Err(WorkerError::Busy(task, variant)) => {
                 let mut temp = task;
+                //if its busy and hasn't changed its logically still busy and no point in checking
+                while self.worker_state_copy[unsafe {For::empty::<For>().get_tid()}] == u64::MAX{
+                    spin_loop()
+                }
                 match variant {
+                    //this is still in a loop but should fall through immediately
                     LockVariant::None => while let Err(WorkerError::Busy(t, _)) = self.any_task_lockless::<_, For>(temp) { temp = t; }
                     LockVariant::Strong => while let Err(WorkerError::Busy(t, _)) = self.any_task_locking::<_, For>(temp) { temp = t; },
                     _ => unreachable!(),
@@ -213,22 +258,50 @@ impl<const N: usize> Scheduler<N> {
             Err(WorkerError::Misc) => {}
         }
     }
+
+    ///Its your responsibility to make sure the predicate lives long enough and has a state that ends the while loop
+    pub fn block_until<F: FnOnce(), For: IdxCache, P: Fn() -> bool>(&mut self, busy: Result<(), WorkerError<For, N, F>>, predicate: P){
+        //first wait for the arrival of the task
+        self.block_until_arrival(busy);
+        while !predicate() {
+            spin_loop()
+        }
+    }
+    //real tongue twister huh
+    pub fn block_until_timeout<F: FnOnce(), For: IdxCache, P: Fn() -> bool>(&mut self, busy: Result<(), WorkerError<For, N, F>>, predicate: P, timeout: Duration){
+        //first wait for the arrival of the task
+        self.block_until_arrival(busy);
+        let now = Instant::now();
+        while !predicate() && now.elapsed() < timeout {
+            spin_loop()
+        }
+    }
     #[inline]
     ///this just exists for if you want to be explicit you should generally use the macro
-    pub fn create_task<T: FnOnce() -> F, F>(task: T) -> TaskWrapper<N, F> where F: FnOnce() {
-        unsafe {TaskWrapper((task(), true))}
+    pub fn create_task<Callee: IdxCache, T: FnOnce() -> F, F>(task: T) -> TaskWrapper<Callee, N, F> where F: FnOnce() {
+        TaskWrapper((task(), true, PhantomData))
+    }
+    #[inline]
+    pub fn create_task_with_callback<Callee: IdxCache, T, F>(task: T)
+        -> TaskWrapper<Callee, N, F>
+        where F: FnOnce(),
+              T: FnOnce() -> F
+    {
+
+        TaskWrapper((task(), true, PhantomData))
     }
 
     //partially ignores borrowing rules
     ///you should generally just go through the create_task macro or function
-    pub unsafe fn create_task_unchecked<F: FnMut()>(task: F, replace: bool) -> TaskWrapper<N, F> {
+    pub unsafe fn create_task_unchecked<Callee: IdxCache, F: FnMut()>(task: F, replace: bool) -> TaskWrapper<Callee, N, F> {
         return transmute_copy(&(task, replace))
     }
 }
 
 #[repr(C)]
 #[derive(Debug)]
-pub(crate) struct SubScheduler{
+pub struct SubScheduler{
+    worker_pausing: Vec<Arc<(Mutex<bool>, Condvar)>>,
     //amount of workers
     workers: usize,
     //offset within the global "WORKER_STATE" mask
@@ -272,10 +345,16 @@ impl SubScheduler {
             core::ptr::write(&raw mut (*incomplete_schedulers).worker_terminate, terminate);
             core::ptr::write(&raw mut (*incomplete_schedulers).handles, handles);
             core::ptr::write(&raw mut (*incomplete_schedulers).heartbeat_test, heartbeats);
+            core::ptr::write(&raw mut (*incomplete_schedulers).worker_pausing, Vec::new());
 
             for w in 0..workers {
                 let global_slot = offset + w;
-                let worker = Worker::new(parent.get_sid(), w,
+                let cond = Arc::new((Mutex::new(false), Condvar::new()));
+                (*incomplete_schedulers).worker_pausing.push(cond);
+                let worker = Worker::new(
+                                         (&*incomplete_schedulers).worker_pausing[w].clone(),
+                                         parent.get_sid(),
+                                         w,
                                          tid,
                                          (*incomplete_schedulers).heartbeat_test[global_slot].get(),
                                          &(*incomplete_schedulers).worker_terminate.0[w],

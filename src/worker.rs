@@ -4,8 +4,11 @@ use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use core::sync::atomic::Ordering::Release;
 use std::hint::spin_loop;
 use std::ops::Sub;
+use std::sync::{Arc, Condvar, Mutex};
 
 pub struct Worker{
+    pub(crate) pause: Arc<(Mutex<bool>, Condvar)>,
+
     pub(crate) parent_idx: usize,
 
     pub(crate) idx: usize,
@@ -29,8 +32,9 @@ static EMPTY_TASK: Task = Task::empty();
 
 
 impl Worker {
-    pub(crate) fn new(parent_idx: usize, idx: usize, slot: usize, has_heartbeat: &'static AtomicBool, signal: &'static AtomicBool, current_task: AtomicPtr<Task>) -> Self {
+    pub(crate) fn new(pause: Arc<(Mutex<bool>, Condvar)>, parent_idx: usize, idx: usize, slot: usize, has_heartbeat: &'static AtomicBool, signal: &'static AtomicBool, current_task: AtomicPtr<Task>) -> Self {
         Self{
+            pause,
             parent_idx,
             idx,
             tid: slot,
@@ -43,11 +47,11 @@ impl Worker {
         unsafe {
             //TODO very dirty and unsafe, will cleanup so no reason to document just yet
             //i dont know what to do with this, no pause or yield so idk
+
             loop {
                 // if !self.has_heartbeat.load(Ordering::Relaxed){
                 //     //self.has_heartbeat.store(true, Ordering::Relaxed);
                 // }
-                spin_loop();
 
                 if self.signal.load(Ordering::Acquire) {
                     //dbg!("Dropping Worker {}", self.idx);
@@ -59,6 +63,7 @@ impl Worker {
 
                     break;
                 }
+                
 
 
                 let current_task = self.current_task.load(Ordering::Acquire);
@@ -68,8 +73,10 @@ impl Worker {
                     continue;
                 }
 
-                (*current_task).execute();
+
+                (*current_task).t_execute();
                 let _ = current_task.replace(Task::empty());
+
                 WORKER_STATE[self.parent_idx][self.tid].get().fetch_or(1 << self.idx, Release);
 
             }

@@ -69,9 +69,9 @@ pub(crate) trait IdxCache{
     }
 }
 
-///FID is just a different static counter so it doesnt clash with IdxCache for all other types
 pub(crate) trait FIDCache{
-    ///The Tid might not appear in the order you registered them but is always the same and increments sequentially
+    ///FID is just a different static counter so it doesnt clash with IdxCache for all other types
+    ///The fid might not appear in the order you registered them but is always the same and increments sequentially
     fn get_fid(&self) -> usize {
         static mut CONTAINED: [usize; 64] = [usize::MAX; 64];
         static REGISTRATIONS: AtomicUsize = AtomicUsize::new(0);
@@ -96,6 +96,7 @@ pub(crate) trait FIDCache{
         }
     }
 }
+
 
 pub(crate) trait SchedCache{
     fn get_sid(&self) -> usize {
