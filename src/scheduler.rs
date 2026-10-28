@@ -108,7 +108,7 @@ pub struct Scheduler<const N: usize> {
     pub(crate) worker_state_copy: [u64; MAX_WORKERS_PER_SCHED],
 }
 impl<const N: usize> Scheduler<N> {
-    pub fn new(config: Config) -> SchedulerBuilder {
+    pub fn new(config: Config) -> SchedulerBuilder<N> {
         unsafe {<Scheduler<N> as SchedCache>::empty::<Self>().get_sid();}
 
         SchedulerBuilder{
@@ -322,7 +322,7 @@ static mut SUB_SCHEDULERS:
     [const { MaybeUninit::uninit() }; MAX_SUB_SCHEDULERS];
 impl SubScheduler {
 
-    pub(crate) fn new<T: IdxCache>(parent: &Scheduler<0>, offset: usize, workers: usize) -> *mut Self {
+    pub(crate) fn new<T: IdxCache, const N: usize>(parent: &Scheduler<N>, offset: usize, workers: usize) -> *mut Self {
         let tid = unsafe {T::empty::<T>().get_tid()};
 
 

@@ -5,16 +5,16 @@ use core::any::type_name;
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 
-pub struct SchedulerBuilder{
+pub struct SchedulerBuilder<const N: usize> {
     pub(crate) config: Config,
     //not yet completed scheduler
-    pub(crate) incomplete: Scheduler<0>,
+    pub(crate) incomplete: Scheduler<N>,
 
     pub(crate) registrations: usize,
 
     pub(crate) total_workers: usize
 }
-impl SchedulerBuilder {
+impl<const N: usize> SchedulerBuilder<N> {
     #[inline(never)]
     pub fn add_scheduler<T: IdxCache>(mut self, thread_overwrite: ThreadAmount) -> Self{
         self.registrations += 1;
@@ -28,7 +28,7 @@ impl SchedulerBuilder {
         };
 
         let offset = self.total_workers;
-        let sh = SubScheduler::new::<T>(&self.incomplete, offset, workers);
+        let sh = SubScheduler::new::<T, N>(&self.incomplete, offset, workers);
         self.total_workers += workers;
 
         #[cfg(debug_assertions)]
@@ -42,7 +42,7 @@ impl SchedulerBuilder {
     }
     
 
-    pub fn apply(self) -> Scheduler<0>{
+    pub fn apply(self) -> Scheduler<N>{
         self.incomplete
     }
 }
