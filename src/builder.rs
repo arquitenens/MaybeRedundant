@@ -2,6 +2,7 @@ use crate::config::{Config, ThreadAmount};
 use crate::idx_cache::{IdxCache, SchedCache};
 use crate::scheduler::{Padded, Scheduler, SubScheduler, WORKER_STATE};
 use core::any::type_name;
+use std::mem::{transmute, transmute_copy, MaybeUninit};
 use std::sync::atomic::{AtomicU64, AtomicUsize};
 
 
@@ -35,8 +36,8 @@ impl<const N: usize> SchedulerBuilder<N> {
         println!("sh: {:p}", sh);
 
         self.incomplete.worker_state_copy[unsafe {T::empty::<T>().get_tid()}] = (1 << workers) - 1;
-        //Dude im so sorry
-        unsafe {*&raw mut WORKER_STATE[self.incomplete.get_sid()][T::empty::<T>().get_tid()] = Padded(AtomicU64::new((1 << workers) - 1))};
+        let ic = unsafe {transmute_copy::<Scheduler<N>, MaybeUninit<Scheduler<N>>>(&self.incomplete)}.get_sid();
+        unsafe {*&raw mut WORKER_STATE[ic][T::empty::<T>().get_tid()] = Padded(AtomicU64::new((1 << workers) - 1))};
         unsafe {self.incomplete.generic_schedulers[T::empty::<T>().get_tid()] = Padded(sh)};
         return self
     }

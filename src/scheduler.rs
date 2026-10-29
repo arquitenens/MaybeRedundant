@@ -23,18 +23,18 @@ use std::time::{Duration, Instant};
 
 #[macro_export]
 macro_rules! create_task {
-    ($task:ident($($arg:expr),*)) => {
-        Scheduler::create_task(|| $task($($arg),*))
+    ($task:expr) => {
+        Scheduler::create_task(|| $task)
     };
 }
 
 #[macro_export]
 macro_rules! create_task_with_callback {
-    ($task:ident($($arg:expr),*), $callback:ident($($callback_arg:expr),*)) => {
+    ($task:expr, $callback:expr) => {
         Scheduler::create_task_with_callback(|| {
-            let mut exec = $task($($arg),*);
+            let mut exec = $task;
             exec();
-            $callback($($callback_arg),*)
+            $callback
         })
     };
 }
@@ -98,18 +98,19 @@ pub(crate) enum LockVariant{
 }
 
 
-pub(crate) enum WorkerError<Callee: IdxCache, const N: usize, F: FnOnce()>{
+pub enum WorkerError<Callee: IdxCache, const N: usize, F: FnOnce()>{
     Busy(TaskWrapper<Callee, N, F>, LockVariant),
     Misc,
 }
 
+#[derive(Clone)]
 pub struct Scheduler<const N: usize> {
     pub(crate) generic_schedulers: [Padded<*mut SubScheduler>; MAX_SUB_SCHEDULERS],
     pub(crate) worker_state_copy: [u64; MAX_WORKERS_PER_SCHED],
 }
 impl<const N: usize> Scheduler<N> {
     pub fn new(config: Config) -> SchedulerBuilder<N> {
-        unsafe {<Scheduler<N> as SchedCache>::empty::<Self>().get_sid();}
+        unsafe {<MaybeUninit<Scheduler<N>> as SchedCache>::empty::<Self>().get_sid();}
 
         SchedulerBuilder{
             config,
@@ -152,11 +153,11 @@ impl<const N: usize> Scheduler<N> {
         }
 
         if available_idx == 64 {
-            let completed = unsafe {(*&raw mut WORKER_STATE[self.get_sid()])[tid].get().load(Acquire)};
+            let completed = unsafe {(*&raw mut WORKER_STATE[MaybeUninit::<Self>::uninit().get_sid()])[tid].get().load(Acquire)};
             if completed.count_ones() as usize == sub_scheduler.workers{
                 self.worker_state_copy[tid] = completed;
                 //TODO unless i change this code the store is fine.. i hope i dont forget
-                unsafe {(*&raw mut WORKER_STATE[self.get_sid()])[tid].get().store(0, Release)};
+                unsafe {(*&raw mut WORKER_STATE[MaybeUninit::<Self>::uninit().get_sid()])[tid].get().store(0, Release)};
             }
             return Err(WorkerError::Busy(exec, LockVariant::None));
         }
@@ -179,7 +180,7 @@ impl<const N: usize> Scheduler<N> {
         let available_idx: usize;
 
 
-        let available_workers = unsafe {(*&raw mut WORKER_STATE[self.get_sid()])[tid].get().load(Acquire)};
+        let available_workers = unsafe {(*&raw mut WORKER_STATE[MaybeUninit::<Self>::uninit().get_sid()])[tid].get().load(Acquire)};
         unsafe {
             asm!(
             "xor {dst}, {dst}",
@@ -191,7 +192,7 @@ impl<const N: usize> Scheduler<N> {
         if available_idx == 64 {
             return Err(WorkerError::Busy(exec, LockVariant::Strong));
         }
-        unsafe {(*&raw mut WORKER_STATE[self.get_sid()])[tid].get().fetch_and(!(1 << available_idx), Release) };
+        unsafe {(*&raw mut WORKER_STATE[MaybeUninit::<Self>::uninit().get_sid()])[tid].get().fetch_and(!(1 << available_idx), Release) };
 
         unsafe {self.mail_task(exec, sub_scheduler, available_idx)}
 
@@ -353,7 +354,7 @@ impl SubScheduler {
                 (*incomplete_schedulers).worker_pausing.push(cond);
                 let worker = Worker::new(
                                          (&*incomplete_schedulers).worker_pausing[w].clone(),
-                                         parent.get_sid(),
+                                         MaybeUninit::new((*parent).clone()).get_sid(),
                                          w,
                                          tid,
                                          (*incomplete_schedulers).heartbeat_test[global_slot].get(),

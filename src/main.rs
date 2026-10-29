@@ -79,8 +79,8 @@ fn main() {
 
      unsafe {
          for i in 0..10_000_000{
-             let create1 = create_task_with_callback!(empty_task1(), task_finished(task_completion));
-             let create2 = create_task!(empty_task1());
+             let create1 = create_task_with_callback!(test_task3(atomic_counter), task_finished(task_completion));
+             let create2 = create_task!(test_task3(atomic_counter));
              let x1 = sh.any_task_locking::<_, Post>(create1);
              sh.block_until(x1, || {
                  return task_completion.load(Acquire);

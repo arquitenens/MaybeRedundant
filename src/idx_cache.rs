@@ -29,10 +29,21 @@ fn private_tid<T: IdxCache>(own: &T) -> usize {
         unsafe { asm!("mov {0}, {0}", inout(reg) imlosingit); imlosingit };
         value
     };
-    unsafe { asm!("mov {0}, {0}", in(reg) own); own };
+    #[cfg(miri)]
+    {
+        core::hint::black_box(x);
+        core::hint::black_box(_unique_t);
+    }
+
+    #[cfg(not(miri))]
+    {
+        unsafe { asm!("mov {0}, {0}", in(reg) own) };
+    }
     _unique_t as usize
 }
 
+//I literally don't know why this works.. like i have some theories but i dont know why the function layout is the way it is
+//i think its cool, its super fast and does exactly what i need but ugh its so sketchy Nghhh
 #[inline]
 fn bucket(tid: u64) -> usize {
     (tid >> 5 & 63) as usize
@@ -62,9 +73,9 @@ pub(crate) trait IdxCache{
     //I don't need a valid instance of T
     //This is no doubt really unsafe
     #[inline]
-    unsafe fn empty<'a, T>() -> &'a Self where Self: Sized {
+    unsafe fn empty<T>() -> MaybeUninit<T> where Self: Sized {
         unsafe {
-            transmute(&MaybeUninit::<T>::uninit())
+            MaybeUninit::<T>::uninit()
         }
     }
 }
@@ -90,9 +101,9 @@ pub(crate) trait FIDCache{
     //I don't need a valid instance of T
     //but still pretty unsafe
     #[inline]
-    unsafe fn empty<'a, T>() -> &'a Self where Self: Sized {
+    unsafe fn empty<T>() -> MaybeUninit<T> where Self: Sized {
         unsafe {
-            transmute(&MaybeUninit::<T>::uninit())
+            MaybeUninit::<T>::uninit()
         }
     }
 }
@@ -117,13 +128,13 @@ pub(crate) trait SchedCache{
     //I don't need a valid instance of T
     //but still pretty unsafe
     #[inline]
-    unsafe fn empty<'a, T>() -> &'a Self where Self: Sized {
+    unsafe fn empty<T>() -> MaybeUninit<T> where Self: Sized {
         unsafe {
-            transmute(&MaybeUninit::<T>::uninit())
+            MaybeUninit::<T>::uninit()
         }
     }
 }
 impl<T> IdxCache for T{}
 impl<T> FIDCache for T{}
 
-impl<const N: usize> SchedCache for Scheduler<N>{}
+impl<const N: usize> SchedCache for MaybeUninit<Scheduler<N>>{}
